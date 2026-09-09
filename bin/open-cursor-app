@@ -46,7 +46,11 @@ notify() {
   fi
 }
 
-# ── Start bridge if not running ──────────────────────────
+# ── Start bridge & mobile dashboard if not running ───────
+
+is_mobile_running() {
+  curl -sf --connect-timeout 1 "http://127.0.0.1:9880/healthz" >/dev/null 2>&1
+}
 
 if ! is_bridge_running; then
   if [ -z "$NODE_BIN" ]; then
@@ -75,6 +79,12 @@ if ! is_bridge_running; then
 else
   # Bridge already running, just update PID file
   ps aux | grep "node index.js" | grep -v grep | awk '{print $2}' > "$PID_FILE" 2>/dev/null
+fi
+
+if ! is_mobile_running && [ -d "$BRIDGE_DIR/mobile" ] && [ -n "$NODE_BIN" ]; then
+  cd "$BRIDGE_DIR/mobile"
+  setsid "$NODE_BIN" server.js > "$BRIDGE_DIR/mobile.log" 2>&1 &
+  echo $! > "$BRIDGE_DIR/mobile.pid"
 fi
 
 # ── Open Cursor ──────────────────────────────────────────

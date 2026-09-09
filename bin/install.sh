@@ -248,19 +248,26 @@ echo -e "  ${GREEN}✓${NC} Extension $EXTENSION_ID@$EXTENSION_VERSION"
 echo -e "  ${GREEN}✓${NC} Extension linked: $EXTENSION_LINK → $EXTENSION_SRC"
 echo -e "  ${CYAN}ℹ${NC} Extension source lives outside Cursor's managed application files"
 
-# ── Step 6: Create desktop entry ─────────────────────────
+# ── Step 6: Create desktop entries & app registration ───────
 
 echo ""
-echo -e "${YELLOW}[6/6] Creating startup configuration...${NC}"
+echo -e "${YELLOW}[6/6] Creating startup configuration & registering applications...${NC}"
 
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 mkdir -p "$ICON_DIR"
 cp "$BRIDGE_DIR/share/open-cursor.svg" "$ICON_DIR/open-cursor.svg"
+
+if [ -f "$BRIDGE_DIR/scripts/generate-icons.py" ] && command -v python3 &>/dev/null; then
+  python3 "$BRIDGE_DIR/scripts/generate-icons.py" 2>/dev/null || true
+fi
+
 if command -v gtk-update-icon-cache &>/dev/null; then
   gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 fi
 
 mkdir -p "$HOME/.local/share/applications"
+
+# 1. Main Open-Cursor IDE Application
 DESKTOP_FILE="$HOME/.local/share/applications/open-cursor.desktop"
 cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
@@ -271,7 +278,7 @@ GenericName[ja]=マルチエージェント コードエディタ
 Comment=Multi-agent coding IDE (subscription-backed local bridge)
 Comment[ja]=Codex + Antigravity マルチエージェント コーディングIDE
 Exec=$BRIDGE_DIR/bin/open-cursor-app %F
-Icon=$BRIDGE_DIR/share/open-cursor.svg
+Icon=open-cursor
 Terminal=false
 Type=Application
 Categories=Development;IDE;
@@ -279,7 +286,7 @@ Keywords=code;editor;ai;multi-agent;cursor;codex;gemini;
 StartupNotify=true
 StartupWMClass=Cursor
 MimeType=text/plain;inode/directory;application/x-cursor-workspace;
-Actions=new-window;monitor;status;usage;help;stop-bridge;
+Actions=new-window;monitor;status;usage;dashboard;stop-bridge;
 
 [Desktop Action new-window]
 Name=New Window
@@ -301,18 +308,57 @@ Name=LLM Usage
 Name[ja]=LLMクォータ確認
 Exec=$BRIDGE_DIR/bin/open-cursor-terminal --hold $BRIDGE_DIR/bin/usage
 
-[Desktop Action help]
-Name=Command List
-Name[ja]=コマンド一覧
-Exec=$BRIDGE_DIR/bin/open-cursor-terminal --hold $BRIDGE_DIR/bin/open-cursor-help
+[Desktop Action dashboard]
+Name=Mobile Web Dashboard
+Name[ja]=Webダッシュボードを開く
+Exec=xdg-open http://127.0.0.1:9880
 
 [Desktop Action stop-bridge]
 Name=Stop Bridge Server
 Name[ja]=ブリッジサーバーを停止
 Exec=$BRIDGE_DIR/bin/stop-bridge
 EOF
-
 chmod 644 "$DESKTOP_FILE"
+
+# 2. Open-Cursor Live Monitor Application
+MONITOR_DESKTOP="$HOME/.local/share/applications/open-cursor-monitor.desktop"
+cat > "$MONITOR_DESKTOP" << EOF
+[Desktop Entry]
+Name=Open-Cursor Live Monitor
+Name[ja]=Open-Cursor ライブモニター
+GenericName=LLM & Agent Live Monitor
+GenericName[ja]=リアルタイムLLM・エージェント監視
+Comment=Live monitoring of multi-agent execution, LLM quota, and modified files
+Comment[ja]=各LLM利用残量・自律エージェント稼働状況・変更ファイルのリアルタイム監視
+Exec=$BRIDGE_DIR/bin/open-cursor-terminal $BRIDGE_DIR/bin/open-cursor-monitor
+Icon=open-cursor
+Terminal=false
+Type=Application
+Categories=Development;
+Keywords=monitor;agent;llm;quota;codex;gemini;open-cursor;
+StartupNotify=false
+EOF
+chmod 644 "$MONITOR_DESKTOP"
+
+# 3. Open-Cursor Web Dashboard Application
+DASHBOARD_DESKTOP="$HOME/.local/share/applications/open-cursor-dashboard.desktop"
+cat > "$DASHBOARD_DESKTOP" << EOF
+[Desktop Entry]
+Name=Open-Cursor Web Dashboard
+Name[ja]=Open-Cursor Webダッシュボード
+GenericName=Mobile & Web Dashboard
+GenericName[ja]=モバイル・Webダッシュボード
+Comment=Open-Cursor mobile web dashboard and execution monitor
+Comment[ja]=ブラウザやスマホから確認・実行可能なWebダッシュボード
+Exec=xdg-open http://127.0.0.1:9880
+Icon=open-cursor
+Terminal=false
+Type=Application
+Categories=Development;
+Keywords=dashboard;mobile;web;open-cursor;
+StartupNotify=false
+EOF
+chmod 644 "$DASHBOARD_DESKTOP"
 
 for desktop_dir in "$HOME/デスクトップ" "$HOME/Desktop"; do
   if [ -d "$desktop_dir" ]; then
@@ -323,6 +369,14 @@ for desktop_dir in "$HOME/デスクトップ" "$HOME/Desktop"; do
       gio set "$SHORTCUT" metadata::trusted true 2>/dev/null || true
     fi
     echo -e "  ${GREEN}✓${NC} Desktop shortcut: $SHORTCUT"
+
+    SHORTCUT_MONITOR="$desktop_dir/Open-Cursor ライブモニター.desktop"
+    cp "$MONITOR_DESKTOP" "$SHORTCUT_MONITOR"
+    chmod 755 "$SHORTCUT_MONITOR"
+    if command -v gio &>/dev/null; then
+      gio set "$SHORTCUT_MONITOR" metadata::trusted true 2>/dev/null || true
+    fi
+    echo -e "  ${GREEN}✓${NC} Desktop shortcut: $SHORTCUT_MONITOR"
   fi
 done
 
@@ -330,7 +384,10 @@ if command -v update-desktop-database &>/dev/null; then
   update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 fi
 
-echo -e "  ${GREEN}✓${NC} Desktop entry created: $DESKTOP_FILE"
+echo -e "  ${GREEN}✓${NC} Desktop entries registered:"
+echo -e "    - $DESKTOP_FILE"
+echo -e "    - $MONITOR_DESKTOP"
+echo -e "    - $DASHBOARD_DESKTOP"
 
 chmod +x "$BRIDGE_DIR/bin/open-cursor"
 chmod +x "$BRIDGE_DIR/bin/open-cursor-app"

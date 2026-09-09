@@ -13,6 +13,7 @@ run/
 mobile.token
 .pytest_cache/
 .mimocode/
+dist/
 
 collaboration-verification.json
 server/personal/
