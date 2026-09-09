@@ -1,9 +1,7 @@
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 
 import {
   buildGitReviewContext,
@@ -18,6 +16,15 @@ import {
   parseAntigravityModels,
   resolveAntigravityModel,
 } from "./antigravity.js";
+import {
+  ExecutionAbortedError,
+  ExecutionTimeoutError,
+  HttpError,
+  activeExecutionCount,
+  executionConfig,
+  runProcess,
+  stopActiveProcesses,
+} from "./process-runner.js";
 
 const VERSION = "2.3.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
@@ -25,40 +32,7 @@ const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");
 const CODEX_HOME = join(homedir(), ".codex");
 const GEMINI_HOME = join(homedir(), ".gemini");
-const MAX_OUTPUT_BYTES = envInt("BRIDGE_MAX_OUTPUT_BYTES", 8 * 1024 * 1024, 1024);
-const AGENT_TIMEOUT_MS = envInt("BRIDGE_AGENT_TIMEOUT_MS", 10 * 60 * 1000, 1000);
-const KILL_GRACE_MS = envInt("BRIDGE_KILL_GRACE_MS", 1500, 100);
 const AGY_MODEL_DISCOVERY_TIMEOUT_MS = 5000;
-
-function envInt(name, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) return fallback;
-  return parsed;
-}
-
-class HttpError extends Error {
-  constructor(statusCode, message) {
-    super(message);
-    this.name = "HttpError";
-    this.statusCode = statusCode;
-  }
-}
-
-class ExecutionAbortedError extends Error {
-  constructor(message = "Execution aborted") {
-    super(message);
-    this.name = "AbortError";
-  }
-}
-
-class ExecutionTimeoutError extends HttpError {
-  constructor(timeoutMs) {
-    super(504, `Agent execution exceeded ${timeoutMs} ms`);
-    this.name = "ExecutionTimeoutError";
-  }
-}
 
 const AGENTS = {
   codex: {
@@ -90,7 +64,6 @@ const AGENTS = {
   },
 };
 
-const activeProcesses = new Map();
 let antigravityModelCache = {
   models: [],
   expiresAt: 0,
@@ -105,164 +78,6 @@ async function getCodexModel() {
   } catch {
     return "auto";
   }
-}
-
-function activeExecutionCount() {
-  return activeProcesses.size;
-}
-
-function executionConfig() {
-  return {
-    timeout_ms: AGENT_TIMEOUT_MS,
-    max_output_bytes: MAX_OUTPUT_BYTES,
-    kill_grace_ms: KILL_GRACE_MS,
-  };
-}
-
-function runProcess({
-  agent,
-  command,
-  args,
-  cwd,
-  env,
-  signal,
-  onStdout,
-  onStderr,
-  timeoutMs = AGENT_TIMEOUT_MS,
-  transformContent,
-}) {
-  if (signal?.aborted) {
-    return Promise.reject(new ExecutionAbortedError("Execution aborted before start"));
-  }
-
-  return new Promise((resolvePromise, rejectPromise) => {
-    const executionId = randomUUID();
-    const child = spawn(command, args, {
-      cwd: cwd || process.cwd(),
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-
-    activeProcesses.set(child, {
-      id: executionId,
-      agent,
-      startedAt: Date.now(),
-    });
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-
-    let stdout = "";
-    let stderr = "";
-    let outputBytes = 0;
-    let settled = false;
-    let aborted = false;
-    let timedOut = false;
-    let outputExceeded = false;
-    let forceKillTimer = null;
-
-    const terminate = () => {
-      if (child.exitCode !== null || child.signalCode) return;
-      try {
-        child.kill("SIGTERM");
-      } catch {}
-      if (!forceKillTimer) {
-        forceKillTimer = setTimeout(() => {
-          if (child.exitCode === null && !child.signalCode) {
-            try {
-              child.kill("SIGKILL");
-            } catch {}
-          }
-        }, KILL_GRACE_MS);
-        forceKillTimer.unref?.();
-      }
-    };
-
-    const onAbort = () => {
-      aborted = true;
-      terminate();
-    };
-
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    const executionTimer = setTimeout(() => {
-      timedOut = true;
-      terminate();
-    }, timeoutMs);
-    executionTimer.unref?.();
-
-    const cleanup = () => {
-      activeProcesses.delete(child);
-      signal?.removeEventListener("abort", onAbort);
-      clearTimeout(executionTimer);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
-    };
-
-    const settle = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      fn(value);
-    };
-
-    const consumeOutput = (kind, text, callback) => {
-      if (settled || outputExceeded) return;
-      outputBytes += Buffer.byteLength(text, "utf8");
-      if (outputBytes > MAX_OUTPUT_BYTES) {
-        outputExceeded = true;
-        terminate();
-        return;
-      }
-
-      if (kind === "stdout") stdout += text;
-      else stderr += text;
-      callback?.(text);
-    };
-
-    child.stdout.on("data", (text) => consumeOutput("stdout", text, onStdout));
-    child.stderr.on("data", (text) => consumeOutput("stderr", text, onStderr));
-
-    child.once("error", (error) => settle(rejectPromise, error));
-    child.once("close", (code, signalCode) => {
-      if (aborted) {
-        settle(rejectPromise, new ExecutionAbortedError("Agent execution cancelled"));
-        return;
-      }
-      if (timOut) {
-        settle(rejectPromise, new ExecutionTimeoutError(timeoutMs));
-        return;
-      }
-      if (outputExceeded) {
-        settle(
-          rejectPromise,
-          new HttpError(502, `Agent output exceeded ${MAX_OUTPUT_BYTES} bytes`)
-        );
-        return;
-      }
-
-      const raw = stdout.trim() || stderr.trim();
-      let content = raw;
-      if (transformContent) {
-        try {
-          content = transformContent(raw, { stdout, stderr, code, signal: signalCode });
-        } catch (error) {
-          settle(rejectPromise, error);
-          return;
-        }
-      }
-
-      settle(resolvePromise, {
-        content,
-        stdout,
-        stderr,
-        agent,
-        code,
-        signal: signalCode,
-        executionId,
-      });
-    });
-  });
 }
 
 function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
@@ -290,10 +105,9 @@ function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
 }
 
 function antigravityEnvironment(home) {
-  const actualHome = home || process.env.HOME;
   return {
     ...process.env,
-    HOME: actualHome,
+    HOME: home || process.env.HOME,
     GEMINI_HOME,
   };
 }
@@ -335,8 +149,7 @@ async function getAntigravityModels({ force = false } = {}) {
 
 async function resolveRequestedAntigravityModel(model) {
   if (!model) return undefined;
-  const models = await getAntigravityModels();
-  return resolveAntigravityModel(model, models);
+  return resolveAntigravityModel(model, await getAntigravityModels());
 }
 
 function antigravityArgs(prompt, targetModel, outputFormat) {
@@ -347,15 +160,9 @@ function antigravityArgs(prompt, targetModel, outputFormat) {
   return args;
 }
 
-async function runAntigravityText(prompt, { cwd, targetModel, signal, onChunk, home } = {}) {
-  const actualCwd = cwd || process.cwd();
-  return runProcess({
-    agent: "antigravity",
-    command: AGY_BIN,
-    args: antigravityArgs(prompt, targetModel),
+function antigravityProcessOptions(actualCwd, home) {
+  return {
     cwd: actualCwd,
-    signal,
-    onStdout: onChunk,
     env: {
       ...antigravityEnvironment(home),
       PWD: actualCwd,
@@ -363,29 +170,36 @@ async function runAntigravityText(prompt, { cwd, targetModel, signal, onChunk, h
       INIT_CWD: "",
       VSCODE_CWD: "",
     },
+  };
+}
+
+async function runAntigravityText(prompt, { cwd, targetModel, signal, onChunk, home } = {}) {
+  const actualCwd = cwd || process.cwd();
+  const processOptions = antigravityProcessOptions(actualCwd, home);
+  return runProcess({
+    agent: "antigravity",
+    command: AGY_BIN,
+    args: antigravityArgs(prompt, targetModel),
+    ...processOptions,
+    signal,
+    onStdout: onChunk,
   });
 }
 
 async function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
   const actualCwd = cwd || process.cwd();
   const targetModel = await resolveRequestedAntigravityModel(model);
-  let streamSummary = null;
   const parser = createAntigravityStreamParser({ onText: onChunk });
+  let streamSummary = null;
+  const processOptions = antigravityProcessOptions(actualCwd, home);
 
   const result = await runProcess({
     agent: "antigravity",
     command: AGY_BIN,
     args: antigravityArgs(prompt, targetModel, "stream-json"),
-    cwd: actualCwd,
+    ...processOptions,
     signal,
     onStdout: (text) => parser.feed(text),
-    env: {
-      ...antigravityEnvironment(home),
-      PWD: actualCwd,
-      OLDPWD: "",
-      INIT_CWD: "",
-      VSCODE_CWD: "",
-    },
     transformContent: (raw) => {
       streamSummary = parser.finish();
       return streamSummary.response || raw;
@@ -394,6 +208,9 @@ async function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}
 
   result.antigravity = streamSummary || parser.snapshot();
 
+  // Only retry when argument parsing clearly rejected structured output before
+  // any model text was emitted. This avoids accidentally executing a write-capable
+  // Antigravity task twice after a partially successful run.
   if (
     isStructuredOutputUnsupported(result) &&
     !result.antigravity.streamedText &&
@@ -408,6 +225,7 @@ async function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}
     });
   }
 
+  // Compatibility with a CLI that accepts the flag but still prints plain text.
   if (result.code === 0 && !result.antigravity.resultSeen) {
     const plain = result.stdout.trim();
     if (plain && !result.antigravity.streamedText) onChunk?.(plain);
@@ -421,7 +239,8 @@ async function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}
     result.antigravity.status !== "SUCCESS"
   ) {
     result.code = 1;
-    const detail = result.antigravity.error || `Antigravity result status: ${result.antigravity.status}`;
+    const detail =
+      result.antigravity.error || `Antigravity result status: ${result.antigravity.status}`;
     result.stderr = [result.stderr, detail].filter(Boolean).join("\n");
   }
 
@@ -602,33 +421,21 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
     case "pipeline": {
       const { workspaceContext, initialGitState } = await buildCollaborationInputs(cwd, prompt);
 
-      emitHeader(
-        onEvent,
-        "## Analysis (Gemini/Antigravity)\n",
-        "antigravity",
-        "analysis-header"
-      );
+      emitHeader(onEvent, "## Analysis (Gemini/Antigravity)\n", "antigravity", "analysis-header");
       const analysis = requireSuccessfulAgent(
         await runAntigravityDetached(buildPlanPrompt(prompt, workspaceContext.text), {
           model: "pro",
           signal,
-          onChunk: (text) =>
-            onEvent?.({ text, agent: "antigravity", phase: "analysis" }),
+          onChunk: (text) => onEvent?.({ text, agent: "antigravity", phase: "analysis" }),
         })
       );
 
-      emitHeader(
-        onEvent,
-        "\n\n## Implementation (Codex/GPT)\n",
-        "codex",
-        "implementation-header"
-      );
+      emitHeader(onEvent, "\n\n## Implementation (Codex/GPT)\n", "codex", "implementation-header");
       const implementation = requireSuccessfulAgent(
         await runCodex(buildImplementationPrompt(prompt, analysis.content, initialGitState), {
           cwd,
           signal,
-          onChunk: (text) =>
-            onEvent?.({ text, agent: "codex", phase: "implementation" }),
+          onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "implementation" }),
         })
       );
 
@@ -645,33 +452,21 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
       const { workspaceContext, baselineHead, initialGitState } =
         await buildCollaborationInputs(cwd, prompt);
 
-      emitHeader(
-        onEvent,
-        "## Plan (Gemini/Antigravity)\n",
-        "antigravity",
-        "planning-header"
-      );
+      emitHeader(onEvent, "## Plan (Gemini/Antigravity)\n", "antigravity", "planning-header");
       const plan = requireSuccessfulAgent(
         await runAntigravityDetached(buildPlanPrompt(prompt, workspaceContext.text), {
           model: "pro",
           signal,
-          onChunk: (text) =>
-            onEvent?.({ text, agent: "antigravity", phase: "planning" }),
+          onChunk: (text) => onEvent?.({ text, agent: "antigravity", phase: "planning" }),
         })
       );
 
-      emitHeader(
-        onEvent,
-        "\n\n## Implementation (Codex/GPT)\n",
-        "codex",
-        "implementation-header"
-      );
+      emitHeader(onEvent, "\n\n## Implementation (Codex/GPT)\n", "codex", "implementation-header");
       const implementation = requireSuccessfulAgent(
         await runCodex(buildImplementationPrompt(prompt, plan.content, initialGitState), {
           cwd,
           signal,
-          onChunk: (text) =>
-            onEvent?.({ text, agent: "codex", phase: "implementation" }),
+          onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "implementation" }),
         })
       );
 
@@ -684,12 +479,7 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         }),
       ]);
 
-      emitHeader(
-        onEvent,
-        "\n\n## Review (Gemini/Antigravity)\n",
-        "antigravity",
-        "review-header"
-      );
+      emitHeader(onEvent, "\n\n## Review (Gemini/Antigravity)\n", "antigravity", "review-header");
       const review = requireSuccessfulAgent(
         await runAntigravityDetached(
           buildReviewPrompt(
@@ -703,24 +493,17 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           {
             model: "pro",
             signal,
-            onChunk: (text) =>
-              onEvent?.({ text, agent: "antigravity", phase: "review" }),
+            onChunk: (text) => onEvent?.({ text, agent: "antigravity", phase: "review" }),
           }
         )
       );
 
-      emitHeader(
-        onEvent,
-        "\n\n## Refinement (Codex/GPT)\n",
-        "codex",
-        "refinement-header"
-      );
+      emitHeader(onEvent, "\n\n## Refinement (Codex/GPT)\n", "codex", "refinement-header");
       const refinement = requireSuccessfulAgent(
         await runCodex(buildRefinementPrompt(prompt, review.content, currentGitState), {
           cwd,
           signal,
-          onChunk: (text) =>
-            onEvent?.({ text, agent: "codex", phase: "refinement" }),
+          onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "refinement" }),
         })
       );
 
@@ -774,16 +557,6 @@ function analyzeTask(prompt) {
   }
 
   return { routing: "collaborative", reason: "general task" };
-}
-
-function stopActiveProcesses() {
-  for (const child of activeProcesses.keys()) {
-    if (child.exitCode === null && !child.signalCode) {
-      try {
-        child.kill("SIGTERM");
-      } catch {}
-    }
-  }
 }
 
 export {
