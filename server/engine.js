@@ -278,16 +278,16 @@ function runProcess({
 function runCodexSession({ threadId, forkFrom, prompt, cwd, model, signal, onChunk } = {}) {
   const args = ["exec"];
   if (threadId || forkFrom) {
+    // `codex exec resume|fork <id>` accepts a much smaller option set than a
+    // fresh exec: no --color, no -C, no approval flags. The thread inherits
+    // its original context; only the prompt is new.
     args.push(threadId ? "resume" : "fork");
     args.push(threadId || forkFrom);
+  } else {
+    if (model) args.push("-m", model);
+    args.push("-C", cwd || process.cwd(), "--approve-for-me");
   }
-  if (model && !threadId && !forkFrom) args.push("-m", model);
-  if (!threadId && !forkFrom) {
-    // Working-directory and approval options are only valid on a fresh exec
-    // start; resume/fork inherit the thread's original context.
-    args.push("-C", cwd || process.cwd());
-  }
-  args.push("--skip-git-repo-check", "--color", "never", "-");
+  args.push("--skip-git-repo-check", "-");
 
   return runProcess({
     agent: "codex",
