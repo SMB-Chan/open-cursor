@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/SMB-Chan/open-cursor/blob/main/config/config.schema.json",
-  "title": "Open-Cursor reference configuration",
+  "title": "Open-Cursor runtime configuration",
   "type": "object",
   "additionalProperties": false,
   "required": ["bridge", "execution", "context", "collaboration", "agents", "routing", "protection"],
@@ -10,10 +10,11 @@
     "bridge": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["port", "host"],
+      "required": ["port", "host", "allowRemote"],
       "properties": {
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "host": { "type": "string", "minLength": 1 }
+        "host": { "type": "string", "minLength": 1 },
+        "allowRemote": { "type": "boolean" }
       }
     },
     "execution": {
@@ -32,11 +33,11 @@
       "additionalProperties": false,
       "required": ["maxFiles", "maxBytes", "maxFileBytes", "diffMaxBytes", "omitSecretLikePaths"],
       "properties": {
-        "maxFiles": { "type": "integer", "minimum": 10 },
-        "maxBytes": { "type": "integer", "minimum": 4096 },
-        "maxFileBytes": { "type": "integer", "minimum": 1024 },
-        "diffMaxBytes": { "type": "integer", "minimum": 4096 },
-        "omitSecretLikePaths": { "type": "boolean" }
+        "maxFiles": { "type": "integer", "minimum": 10, "maximum": 5000 },
+        "maxBytes": { "type": "integer", "minimum": 4096, "maximum": 2097152 },
+        "maxFileBytes": { "type": "integer", "minimum": 1024, "maximum": 262144 },
+        "diffMaxBytes": { "type": "integer", "minimum": 4096, "maximum": 2097152 },
+        "omitSecretLikePaths": { "const": true }
       }
     },
     "collaboration": {
@@ -46,18 +47,23 @@
       "properties": {
         "pipeline": {
           "type": "array",
-          "items": { "enum": ["plan", "implement", "review", "refine"] },
+          "prefixItems": [{ "const": "plan" }, { "const": "implement" }],
           "minItems": 2,
-          "uniqueItems": true
+          "maxItems": 2
         },
         "collaborative": {
           "type": "array",
-          "items": { "enum": ["plan", "implement", "review", "refine"] },
-          "minItems": 2,
-          "uniqueItems": true
+          "prefixItems": [
+            { "const": "plan" },
+            { "const": "implement" },
+            { "const": "review" },
+            { "const": "refine" }
+          ],
+          "minItems": 4,
+          "maxItems": 4
         },
-        "reviewerWorkingDirectory": { "enum": ["detached-temporary"] },
-        "workspaceWriter": { "enum": ["codex"] }
+        "reviewerWorkingDirectory": { "const": "detached-temporary" },
+        "workspaceWriter": { "const": "codex" }
       }
     },
     "agents": {
@@ -103,15 +109,15 @@
     "protection": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["bridgeDir", "codexDir", "geminiDir"],
+      "required": ["bridgeDir", "codexDir", "geminiDir", "loopbackOnlyByDefault", "browserOriginExecutionDenied", "concurrentWorkspaceWriters"],
       "properties": {
         "note": { "type": "string" },
         "bridgeDir": { "type": "string" },
         "codexDir": { "type": "string" },
         "geminiDir": { "type": "string" },
-        "loopbackOnlyByDefault": { "type": "boolean" },
-        "browserOriginExecutionDenied": { "type": "boolean" },
-        "concurrentWorkspaceWriters": { "type": "boolean" }
+        "loopbackOnlyByDefault": { "const": true },
+        "browserOriginExecutionDenied": { "const": true },
+        "concurrentWorkspaceWriters": { "const": false }
       }
     }
   },
