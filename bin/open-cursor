@@ -12,6 +12,14 @@ MOBILE_PORT="${MOBILE_PORT:-9880}"
 MOBILE_URL="http://127.0.0.1:$MOBILE_PORT"
 MOBILE_LOG="$BRIDGE_DIR/mobile.log"
 MOBILE_PID_FILE="$BRIDGE_DIR/mobile.pid"
+MOBILE_TOKEN_FILE="$BRIDGE_DIR/mobile.token"
+MOBILE_ALLOW_REMOTE="${MOBILE_ALLOW_REMOTE:-0}"
+MOBILE_ALLOW_EXEC="${MOBILE_ALLOW_EXEC:-0}"
+MOBILE_HOST="${MOBILE_HOST:-}"
+MOBILE_TOKEN="${MOBILE_TOKEN:-}"
+LAUNCH_WORKSPACE="${OPEN_CURSOR_WORKSPACE:-$PWD}"
+export OPEN_CURSOR_WORKSPACE="$LAUNCH_WORKSPACE"
+export WORKSPACE_DIR="${WORKSPACE_DIR:-$LAUNCH_WORKSPACE}"
 
 # ── Ensure PATH includes ~/.local/bin and Node.js ──
 
@@ -34,6 +42,34 @@ fi
 
 NODE_BIN="$(command -v node 2>/dev/null || true)"
 
+is_true() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if is_true "$MOBILE_ALLOW_REMOTE"; then
+  MOBILE_HOST="${MOBILE_HOST:-0.0.0.0}"
+  if [ -z "$MOBILE_TOKEN" ] && [ -r "$MOBILE_TOKEN_FILE" ]; then
+    MOBILE_TOKEN="$(cat "$MOBILE_TOKEN_FILE")"
+  fi
+  if [ -z "$MOBILE_TOKEN" ]; then
+    if [ -z "$NODE_BIN" ]; then
+      echo "Error: Node.js is required to generate the mobile pairing token." >&2
+      exit 1
+    fi
+    MOBILE_TOKEN="$($NODE_BIN -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')"
+    umask 077
+    printf '%s\n' "$MOBILE_TOKEN" > "$MOBILE_TOKEN_FILE"
+    chmod 600 "$MOBILE_TOKEN_FILE"
+  fi
+else
+  MOBILE_HOST="${MOBILE_HOST:-127.0.0.1}"
+fi
+
+export MOBILE_ALLOW_REMOTE MOBILE_ALLOW_EXEC MOBILE_HOST MOBILE_TOKEN
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -54,7 +90,7 @@ is_bridge_running() {
 }
 
 is_mobile_running() {
-  curl -sf --connect-timeout 1 "$MOBILE_URL/api/status" >/dev/null 2>&1
+  curl -sf --connect-timeout 1 "$MOBILE_URL/healthz" >/dev/null 2>&1
 }
 
 # Start bridge if not running
@@ -64,7 +100,6 @@ if ! is_bridge_running; then
     exit 1
   fi
   echo -e "${YELLOW}Starting bridge server...${NC}"
-  export OPEN_CURSOR_WORKSPACE="${OPEN_CURSOR_WORKSPACE:-$PWD}"
   cd "$BRIDGE_DIR/server"
   setsid "$NODE_BIN" index.js > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
@@ -109,8 +144,22 @@ LOCAL_IP=$(ip route get 1 2>/dev/null | awk '{print $7;exit}' || echo "127.0.0.1
 
 echo ""
 echo -e "  ${CYAN}API:${NC} $BRIDGE_URL/v1"
-echo -e "  ${GREEN}${BOLD}📱 Mobile Web:${NC} http://${LOCAL_IP}:${MOBILE_PORT}"
+if is_true "$MOBILE_ALLOW_REMOTE"; then
+  echo -e "  ${GREEN}${BOLD}📱 Mobile Web:${NC} http://${LOCAL_IP}:${MOBILE_PORT}/#token=${MOBILE_TOKEN}"
+  echo -e "  ${YELLOW}Pairing token is a secret; use only on a trusted LAN or encrypted tunnel.${NC}"
+else
+  echo -e "  ${GREEN}${BOLD}📱 Mobile Web:${NC} http://127.0.0.1:${MOBILE_PORT} (localhost only)"
+  echo -e "  ${CYAN}Remote opt-in:${NC} MOBILE_ALLOW_REMOTE=1 $BRIDGE_DIR/bin/open-cursor"
+fi
+if is_true "$MOBILE_ALLOW_EXEC"; then
+  echo -e "  ${RED}Remote shell execution: ENABLED${NC}"
+else
+  echo -e "  ${CYAN}Remote shell execution:${NC} disabled (MOBILE_ALLOW_EXEC=1 to opt in)"
+fi
+echo -e "  ${CYAN}Workspace:${NC} $WORKSPACE_DIR"
 echo -e "  ${CYAN}Logs:${NC} tail -f $LOG_FILE"
 echo -e "  ${CYAN}Stop:${NC} $BRIDGE_DIR/bin/stop-bridge"
 echo ""
-echo -e "  ${MAGENTA}💡 スマホのブラウザで上記URLを開くと、チャット・自律実行・Git差分確認が可能です。${NC}"
+if is_true "$MOBILE_ALLOW_REMOTE"; then
+  echo -e "  ${MAGENTA}💡 Pairing URLをスマホで開くと、認証済みのチャット・Git確認が可能です。${NC}"
+fi
