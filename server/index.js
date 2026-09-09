@@ -6,13 +6,14 @@
 
 import { createServer } from "node:http";
 import { stat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 // Load and project validated configuration before engine.js evaluates its
 // environment-backed execution constants.
 import { runtimeConfig } from "./config.js";
+import { compressMessages } from "./compressor.js";
 import {
   AGENTS,
   ExecutionAbortedError,
@@ -129,8 +130,32 @@ function assertAgentsEnabled(mode) {
   }
 }
 
-async function resolveWorkspacePath(rawPath) {
-  const candidate = rawPath ? String(rawPath) : process.cwd();
+async function resolveWorkspacePath(rawPath, prompt = "") {
+  let candidate = rawPath ? String(rawPath) : null;
+  if (!candidate && process.env.OPEN_CURSOR_WORKSPACE) {
+    try {
+      const s = await stat(process.env.OPEN_CURSOR_WORKSPACE);
+      if (s.isDirectory()) candidate = process.env.OPEN_CURSOR_WORKSPACE;
+    } catch {}
+  }
+  if (!candidate && prompt) {
+    const match = prompt.match(/\/(?:home|Users)\/[^\s'"`,:;）)]+/);
+    if (match) {
+      try {
+        const potential = resolve(match[0]);
+        const s = await stat(potential);
+        if (s.isDirectory()) candidate = potential;
+        else if (s.isFile()) candidate = dirname(potential);
+      } catch {}
+    }
+  }
+  if (!candidate) {
+    candidate = process.cwd();
+  }
+
+  try {
+    candidate = decodeURIComponent(candidate);
+  } catch {}
   if (!isAbsolute(candidate)) {
     throw new HttpError(400, "X-Workspace-Path must be an absolute path");
   }
@@ -197,9 +222,7 @@ function buildPrompt(messages) {
     throw new HttpError(400, "messages must be an array");
   }
 
-  let prompt = "";
-  let systemContext = "";
-
+  // Validate roles and types
   for (const msg of messages) {
     if (!msg || typeof msg !== "object" || typeof msg.role !== "string") {
       throw new HttpError(400, "Each message must include a role");
@@ -207,11 +230,22 @@ function buildPrompt(messages) {
     if (typeof msg.content !== "string") {
       throw new HttpError(400, "Only string message content is currently supported");
     }
+    if (!["system", "user", "assistant"].includes(msg.role)) {
+      throw new HttpError(400, `Unsupported message role: ${msg.role}`);
+    }
+  }
 
+  // Proactively compress prior turns to prevent context window exhaustion
+  const { messages: effectiveMessages } = compressMessages(messages);
+
+  let prompt = "";
+  let systemContext = "";
+
+  for (const msg of effectiveMessages) {
+    if (!msg || typeof msg.content !== "string") continue;
     if (msg.role === "system") systemContext += `${msg.content}\n`;
     else if (msg.role === "user") prompt += `${msg.content}\n`;
     else if (msg.role === "assistant") prompt += `[Previous response]\n${msg.content}\n\n`;
-    else throw new HttpError(400, `Unsupported message role: ${msg.role}`);
   }
 
   const fullPrompt = systemContext ? `[System]\n${systemContext}\n${prompt}` : prompt;
@@ -352,7 +386,7 @@ async function handleChat(req, res) {
   const body = await parseBody(req);
   const stream = body.stream === true;
   const fullPrompt = buildPrompt(body.messages || []);
-  const cwd = await resolveWorkspacePath(req.headers["x-workspace-path"]);
+  const cwd = await resolveWorkspacePath(req.headers["x-workspace-path"], fullPrompt);
   const selection = parseAgentSelection(body.model || "", req.headers["x-agent-mode"]);
   const taskInfo = analyzeTask(fullPrompt);
   const effectiveMode = selection.mode || taskInfo.routing;
@@ -524,12 +558,20 @@ async function handleModels(req, res) {
   }
 
   if (codex.available) {
-    models.push({
-      id: `codex/${codexModel}`,
-      object: "model",
-      owned_by: "openai",
-      description: "Codex (ChatGPT subscription)",
-    });
+    models.push(
+      {
+        id: "codex",
+        object: "model",
+        owned_by: "openai",
+        description: `OpenAI ChatGPT (${codexModel}) via Codex CLI`,
+      },
+      {
+        id: `codex/${codexModel}`,
+        object: "model",
+        owned_by: "openai",
+        description: "Codex (ChatGPT subscription)",
+      }
+    );
   }
   if (antigravity.available) {
     models.push(

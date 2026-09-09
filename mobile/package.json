@@ -1,0 +1,7 @@
+{
+  "name": "open-cursor-mobile",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Mobile Web Dashboard for Open-Cursor",
+  "main": "server.js"
+}

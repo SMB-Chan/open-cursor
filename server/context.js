@@ -339,6 +339,15 @@ async function changedPaths(root, baseRef) {
 
   const paths = new Set();
   let truncated = false;
+  const IGNORED_DIFF_PATTERNS = [
+    /package-lock\.json$/,
+    /pnpm-lock\.yaml$/,
+    /yarn\.lock$/,
+    /Cargo\.lock$/,
+    /\.min\.(js|css)$/,
+    /\.map$/,
+  ];
+
   for (const args of commands) {
     const result = await captureCommand("git", args, {
       cwd: root,
@@ -346,7 +355,9 @@ async function changedPaths(root, baseRef) {
     });
     truncated ||= result.truncated;
     for (const path of parseNameOnly(result.stdout)) {
-      if (!isSecretPath(path)) paths.add(path);
+      if (!isSecretPath(path) && !IGNORED_DIFF_PATTERNS.some((re) => re.test(path))) {
+        paths.add(path);
+      }
     }
   }
 

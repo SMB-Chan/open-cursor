@@ -69,7 +69,8 @@ for required in \
   "$BRIDGE_DIR/scripts/register-extension.mjs" \
   "$BRIDGE_DIR/share/open-cursor.svg" \
   "$BRIDGE_DIR/bin/open-cursor" \
-  "$BRIDGE_DIR/bin/open-cursor-app"; do
+  "$BRIDGE_DIR/bin/open-cursor-app" \
+  "$BRIDGE_DIR/bin/agy-open-cursor"; do
   if [ ! -f "$required" ]; then
     echo -e "${RED}Required project file is missing:${NC} $required"
     echo "Run this installer from a complete open-cursor repository clone."
@@ -314,7 +315,14 @@ echo -e "  ${GREEN}✓${NC} Desktop entry created: $DESKTOP_FILE"
 chmod +x "$BRIDGE_DIR/bin/open-cursor"
 chmod +x "$BRIDGE_DIR/bin/open-cursor-app"
 chmod +x "$BRIDGE_DIR/bin/stop-bridge"
+chmod +x "$BRIDGE_DIR/bin/agy-open-cursor"
 chmod +x "$BRIDGE_DIR/server/index.js" 2>/dev/null || true
+
+mkdir -p "$HOME/.local/bin"
+ln -sf "$BRIDGE_DIR/bin/open-cursor" "$HOME/.local/bin/open-cursor"
+ln -sf "$BRIDGE_DIR/bin/open-cursor-app" "$HOME/.local/bin/open-cursor-app"
+ln -sf "$BRIDGE_DIR/bin/stop-bridge" "$HOME/.local/bin/stop-bridge"
+ln -sf "$BRIDGE_DIR/bin/agy-open-cursor" "$HOME/.local/bin/agy-open-cursor"
 
 # ── Summary ──────────────────────────────────────────────
 

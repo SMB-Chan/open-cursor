@@ -1,5 +1,5 @@
 #!/bin/bash
-# Open-Cursor Terminal Launcher
+# Open-Cursor Terminal Launcher & Mobile Dashboard
 # 課金なしのマルチエージェントコーディングIDE
 
 BRIDGE_DIR="$HOME/.cursor-codex-bridge"
@@ -7,6 +7,11 @@ BRIDGE_PORT="${BRIDGE_PORT:-9876}"
 BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
 LOG_FILE="$BRIDGE_DIR/bridge.log"
 PID_FILE="$BRIDGE_DIR/bridge.pid"
+
+MOBILE_PORT="${MOBILE_PORT:-9880}"
+MOBILE_URL="http://127.0.0.1:$MOBILE_PORT"
+MOBILE_LOG="$BRIDGE_DIR/mobile.log"
+MOBILE_PID_FILE="$BRIDGE_DIR/mobile.pid"
 
 # ── Ensure PATH includes ~/.local/bin and Node.js ──
 
@@ -33,6 +38,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -47,6 +53,10 @@ is_bridge_running() {
   curl -sf --connect-timeout 1 "$BRIDGE_URL/health" >/dev/null 2>&1
 }
 
+is_mobile_running() {
+  curl -sf --connect-timeout 1 "$MOBILE_URL/api/status" >/dev/null 2>&1
+}
+
 # Start bridge if not running
 if ! is_bridge_running; then
   if [ -z "$NODE_BIN" ]; then
@@ -54,6 +64,7 @@ if ! is_bridge_running; then
     exit 1
   fi
   echo -e "${YELLOW}Starting bridge server...${NC}"
+  export OPEN_CURSOR_WORKSPACE="${OPEN_CURSOR_WORKSPACE:-$PWD}"
   cd "$BRIDGE_DIR/server"
   setsid "$NODE_BIN" index.js > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
@@ -73,11 +84,33 @@ else
   echo -e "${GREEN}Bridge already running.${NC}"
 fi
 
+# Start mobile dashboard if not running
+if ! is_mobile_running && [ -d "$BRIDGE_DIR/mobile" ]; then
+  echo -e "${YELLOW}Starting Mobile Web Dashboard...${NC}"
+  cd "$BRIDGE_DIR/mobile"
+  setsid "$NODE_BIN" server.js > "$MOBILE_LOG" 2>&1 &
+  echo $! > "$MOBILE_PID_FILE"
+
+  for i in $(seq 1 10); do
+    if is_mobile_running; then break; fi
+    sleep 0.5
+  done
+
+  if is_mobile_running; then
+    echo -e "${GREEN}Mobile Web Dashboard started.${NC}"
+  fi
+fi
+
 # Show status
 HEALTH=$(curl -sf "$BRIDGE_URL/health" 2>/dev/null)
 echo -e "${CYAN}$HEALTH${NC}" | python3 -m json.tool 2>/dev/null || echo "$HEALTH"
 
+LOCAL_IP=$(ip route get 1 2>/dev/null | awk '{print $7;exit}' || echo "127.0.0.1")
+
 echo ""
 echo -e "  ${CYAN}API:${NC} $BRIDGE_URL/v1"
+echo -e "  ${GREEN}${BOLD}📱 Mobile Web:${NC} http://${LOCAL_IP}:${MOBILE_PORT}"
 echo -e "  ${CYAN}Logs:${NC} tail -f $LOG_FILE"
 echo -e "  ${CYAN}Stop:${NC} $BRIDGE_DIR/bin/stop-bridge"
+echo ""
+echo -e "  ${MAGENTA}💡 スマホのブラウザで上記URLを開くと、チャット・自律実行・Git差分確認が可能です。${NC}"

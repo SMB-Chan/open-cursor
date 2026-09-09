@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Open-Cursor Mobile</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#161b22">
+  <link rel="manifest" href="/manifest.json">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --card-border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-green: #3fb950;
+      --accent-purple: #bc8cff;
+      --accent-orange: #d29922;
+      --accent-red: #f85149;
+      --user-msg: #1f6feb;
+      --bot-msg: #21262d;
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      height: 100vh;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--card-border);
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: max(12px, env(safe-area-inset-top));
+    }
+    .header-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 16px;
+      color: #fff;
+    }
+    .status-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(63, 185, 80, 0.15);
+      color: var(--accent-green);
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+    }
+    .status-dot.offline { background: var(--accent-red); }
+    main {
+      flex: 1;
+      overflow-y: auto;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+    }
+    .tab-content {
+      display: none;
+      height: 100%;
+      flex-direction: column;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .tab-content.active {
+      display: flex;
+    }
+    /* Bottom Navigation */
+    nav {
+      background: var(--card-bg);
+      border-top: 1px solid var(--card-border);
+      display: flex;
+      justify-content: space-around;
+      padding: 6px 0;
+      padding-bottom: max(6px, env(safe-area-inset-bottom));
+    }
+    .nav-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 10px;
+      font-weight: 500;
+      padding: 4px 12px;
+      border-radius: 8px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      gap: 3px;
+    }
+    .nav-item.active {
+      color: var(--accent);
+    }
+    .nav-icon { font-size: 20px; }
+
+    /* Chat Tab */
+    #tab-chat {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    .model-bar {
+      padding: 8px 12px;
+      background: rgba(22, 27, 34, 0.85);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--card-border);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .model-select {
+      background: #21262d;
+      border: 1px solid var(--card-border);
+      color: #fff;
+      font-size: 13px;
+      padding: 6px 10px;
+      border-radius: 8px;
+      outline: none;
+      font-weight: 500;
+      flex: 1;
+    }
+    .messages-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .message {
+      max-width: 88%;
+      padding: 10px 14px;
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .message.user {
+      align-self: flex-end;
+      background: var(--user-msg);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .message.assistant {
+      align-self: flex-start;
+      background: var(--bot-msg);
+      border: 1px solid var(--card-border);
+      border-bottom-left-radius: 4px;
+      width: 100%;
+      max-width: 100%;
+    }
+    .message pre {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 10px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      margin: 8px 0;
+    }
+    .message code {
+      font-family: var(--font-mono);
+      background: rgba(110, 118, 129, 0.2);
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .message pre code {
+      background: transparent;
+      padding: 0;
+    }
+    .prompt-suggestions {
+      display: flex;
+      gap: 6px;
+      padding: 6px 12px;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .chip {
+      background: #21262d;
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 5px 10px;
+      border-radius: 16px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .input-bar {
+      padding: 8px 12px;
+      background: var(--card-bg);
+      border-top: 1px solid var(--card-border);
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+    .input-bar textarea {
+      flex: 1;
+      background: #0d1117;
+      border: 1px solid var(--card-border);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 18px;
+      font-size: 14px;
+      max-height: 100px;
+      resize: none;
+      outline: none;
+      font-family: var(--font-sans);
+    }
+    .btn-send, .btn-mic {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #000;
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      cursor: pointer;
+      font-weight: bold;
+      flex-shrink: 0;
+    }
+    .btn-mic {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid var(--card-border);
+    }
+    .btn-mic.recording {
+      background: var(--accent-red);
+      color: #fff;
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+
+    /* Cards / Git Tab */
+    .section-pad { padding: 14px; }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .card-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .file-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+      font-size: 13px;
+      font-family: var(--font-mono);
+    }
+    .commit-item {
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+      font-size: 13px;
+    }
+    .commit-hash {
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      margin-right: 6px;
+    }
+    .diff-view {
+      background: #0d1117;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 10px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      overflow-x: auto;
+      max-height: 350px;
+      white-space: pre-wrap;
+      color: #c9d1d9;
+    }
+
+    /* Terminal Tab */
+    .term-box {
+      background: #000;
+      color: #58a6ff;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+      flex: 1;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      min-height: 200px;
+      margin-bottom: 12px;
+    }
+    .quick-actions {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .action-btn {
+      background: #21262d;
+      border: 1px solid var(--card-border);
+      color: #fff;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+    }
+    .action-btn:active { background: #30363d; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="header-title">
+      <span>⚡</span> Open-Cursor Mobile
+    </div>
+    <div class="status-badge" id="bridge-status-pill">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="bridge-status-text">Ready</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- TAB 1: CHAT -->
+    <div class="tab-content active" id="tab-chat">
+      <div class="model-bar">
+        <select class="model-select" id="model-select">
+          <option value="auto">🤖 Auto (自動判別モード - 推奨)</option>
+          <option value="autonomous">⚡ 自律エージェント (承認なし全自動)</option>
+          <option value="mimo-gemini">🤝 MiMo + Gemini (協調モード)</option>
+          <option value="codex">💻 OpenAI ChatGPT / Codex</option>
+          <option value="antigravity/pro">🧠 Gemini 3.1 Pro</option>
+          <option value="antigravity/flash">⚡ Gemini 3.8 Flash</option>
+          <option value="mimo">🚀 Xiaomi MiMo v2.5 Pro</option>
+        </select>
+      </div>
+
+      <div class="messages-container" id="messages-container">
+        <div class="message assistant">
+          👋 <strong>Open-Cursor Mobile へようこそ！</strong><br>
+          スマートフォンからいつでもチャット、自律コード生成、テスト実行、Git変更の確認が可能です。<br>
+          下の入力欄または音声入力ボタンから指示を送ってください。
+        </div>
+      </div>
+
+      <div class="prompt-suggestions">
+        <div class="chip" onclick="fillPrompt('現在のGitステータスを確認して')">📋 Git確認</div>
+        <div class="chip" onclick="fillPrompt('テストを実行して結果を教えて')">🧪 テスト実行</div>
+        <div class="chip" onclick="fillPrompt('直近の変更内容と課題を分析して')">🔍 コード分析</div>
+        <div class="chip" onclick="fillPrompt('コードのリファクタリングを提案して')">✨ リファクタ</div>
+      </div>
+
+      <div class="input-bar">
+        <button class="btn-mic" id="btn-mic" title="音声入力">🎙️</button>
+        <textarea id="prompt-input" rows="1" placeholder="AIに指示を送信..."></textarea>
+        <button class="btn-send" id="btn-send">➤</button>
+      </div>
+    </div>
+
+    <!-- TAB 2: GIT & DIFF -->
+    <div class="tab-content section-pad" id="tab-git">
+      <div class="card">
+        <div class="card-title">
+          <span>🌿 Git ブランチ & 変更</span>
+          <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadGit()">更新</button>
+        </div>
+        <div style="font-size: 13px; margin-bottom: 8px;">
+          ブランチ: <strong id="git-branch" style="color: var(--accent)">-</strong>
+        </div>
+        <div id="git-status-list">変更の読み込み中...</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>📜 最近のコミット</span>
+        </div>
+        <div id="git-commits-list">読み込み中...</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>🔍 作業ツリー差分 (Git Diff)</span>
+        </div>
+        <div class="diff-view" id="git-diff-content">差分なし (Clean)</div>
+      </div>
+    </div>
+
+    <!-- TAB 3: STATUS -->
+    <div class="tab-content section-pad" id="tab-status">
+      <div class="card">
+        <div class="card-title">
+          <span>📊 エージェント稼働状況</span>
+          <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadStatus()">更新</button>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div class="file-item">
+            <span>💻 OpenAI (ChatGPT / Codex)</span>
+            <span id="stat-codex" style="color: var(--accent-orange)">確認中...</span>
+          </div>
+          <div class="file-item">
+            <span>🧠 Google Gemini (Antigravity)</span>
+            <span id="stat-gemini" style="color: var(--accent-green)">利用可能 (Pro/Flash)</span>
+          </div>
+          <div class="file-item">
+            <span>🚀 Xiaomi MiMo</span>
+            <span id="stat-mimo" style="color: var(--accent-green)">利用可能 (v2.5-pro)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span>📡 サーバー情報</span></div>
+        <div style="font-size: 13px; display: flex; flex-direction: column; gap: 6px;">
+          <div>モバイル接続先: <code id="stat-ip">-</code></div>
+          <div>作業ディレクトリ: <code id="stat-dir">-</code></div>
+          <div>稼働時間: <span id="stat-uptime">-</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: TERMINAL -->
+    <div class="tab-content section-pad" id="tab-term">
+      <div class="card-title">⚡ クイックコマンド</div>
+      <div class="quick-actions">
+        <button class="action-btn" onclick="runCmd('git status -s')">📋 Git Status</button>
+        <button class="action-btn" onclick="runCmd('python3 verify_collaboration.py')">🧪 協調テスト</button>
+        <button class="action-btn" onclick="runCmd('git log -n 5 --oneline')">📜 最近のログ</button>
+        <button class="action-btn" onclick="runCmd('df -h /')">💾 ディスク残量</button>
+      </div>
+
+      <div class="card-title">💻 ターミナル出力</div>
+      <div class="term-box" id="term-output">コマンドの実行結果がここに表示されます...</div>
+
+      <div style="display: flex; gap: 8px;">
+        <input type="text" id="cmd-input" placeholder="コマンドを入力 (例: ls -la)" style="flex: 1; background: #0d1117; border: 1px solid var(--card-border); color: #fff; padding: 10px; border-radius: 8px; font-family: var(--font-mono); font-size: 13px;">
+        <button class="action-btn" style="background: var(--accent); color: #000;" onclick="submitCmd()">実行</button>
+      </div>
+    </div>
+  </main>
+
+  <nav>
+    <button class="nav-item active" onclick="switchTab('chat')">
+      <span class="nav-icon">💬</span>
+      <span>チャット</span>
+    </button>
+    <button class="nav-item" onclick="switchTab('git')">
+      <span class="nav-icon">📁</span>
+      <span>Git差分</span>
+    </button>
+    <button class="nav-item" onclick="switchTab('status')">
+      <span class="nav-icon">📊</span>
+      <span>ステータス</span>
+    </button>
+    <button class="nav-item" onclick="switchTab('term')">
+      <span class="nav-icon">⚡</span>
+      <span>コマンド</span>
+    </button>
+  </nav>
+
+  <script>
+    // Tab switching
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+      document.getElementById('tab-' + tabId).classList.add('active');
+      const idx = ['chat', 'git', 'status', 'term'].indexOf(tabId);
+      if (idx !== -1) document.querySelectorAll('.nav-item')[idx].classList.add('active');
+
+      if (tabId === 'git') loadGit();
+      if (tabId === 'status') loadStatus();
+    }
+
+    function fillPrompt(text) {
+      const input = document.getElementById('prompt-input');
+      input.value = text;
+      input.focus();
+    }
+
+    // Markdown simple renderer
+    function renderMarkdown(text) {
+      let html = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/```([a-z]*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/\n\n/g, '<br><br>')
+        .replace(/\n/g, '<br>');
+      return html;
+    }
+
+    // Chat functionality
+    const promptInput = document.getElementById('prompt-input');
+    const sendBtn = document.getElementById('btn-send');
+    const messagesContainer = document.getElementById('messages-container');
+    let isStreaming = false;
+
+    async function sendChat() {
+      const prompt = promptInput.value.trim();
+      if (!prompt || isStreaming) return;
+
+      const model = document.getElementById('model-select').value;
+      promptInput.value = '';
+      promptInput.style.height = 'auto';
+
+      // Append user bubble
+      const userDiv = document.createElement('div');
+      userDiv.className = 'message user';
+      userDiv.textContent = prompt;
+      messagesContainer.appendChild(userDiv);
+
+      // Append assistant bubble
+      const botDiv = document.createElement('div');
+      botDiv.className = 'message assistant';
+      botDiv.innerHTML = '<span style="color: var(--text-muted)">思考中...</span>';
+      messagesContainer.appendChild(botDiv);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+      isStreaming = true;
+      sendBtn.textContent = '■';
+      sendBtn.style.background = 'var(--accent-red)';
+
+      let fullResponse = '';
+
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, prompt }),
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('data: ')) {
+              const rawData = trimmed.slice(6);
+              if (rawData === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(rawData);
+                if (parsed.error) {
+                  fullResponse += `\n⚠️ [エラー: ${parsed.error}]`;
+                } else if (parsed.choices && parsed.choices[0]?.delta?.content) {
+                  fullResponse += parsed.choices[0].delta.content;
+                }
+                botDiv.innerHTML = renderMarkdown(fullResponse);
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+              } catch {}
+            }
+          }
+        }
+      } catch (err) {
+        botDiv.innerHTML = `<span style="color: var(--accent-red)">エラー: ${err.message}</span>`;
+      } finally {
+        isStreaming = false;
+        sendBtn.textContent = '➤';
+        sendBtn.style.background = 'var(--accent)';
+      }
+    }
+
+    sendBtn.addEventListener('click', sendChat);
+    promptInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey && window.innerWidth > 768) {
+        e.preventDefault();
+        sendChat();
+      }
+    });
+
+    // Voice recognition support (Mobile Web Speech)
+    const micBtn = document.getElementById('btn-mic');
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const recognizer = new SpeechRecognition();
+      recognizer.lang = 'ja-JP';
+      recognizer.interimResults = true;
+
+      let isRecording = false;
+
+      micBtn.addEventListener('click', () => {
+        if (!isRecording) {
+          recognizer.start();
+          micBtn.classList.add('recording');
+          isRecording = true;
+        } else {
+          recognizer.stop();
+          micBtn.classList.remove('recording');
+          isRecording = false;
+        }
+      });
+
+      recognizer.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          transcript += event.results[i][0].transcript;
+        }
+        promptInput.value = transcript;
+      };
+
+      recognizer.onend = () => {
+        micBtn.classList.remove('recording');
+        isRecording = false;
+      };
+    } else {
+      micBtn.style.display = 'none';
+    }
+
+    // Git Status Loader
+    async function loadGit() {
+      try {
+        const res = await fetch('/api/git');
+        const data = await res.json();
+        document.getElementById('git-branch').textContent = data.branch || 'main';
+
+        const statusList = document.getElementById('git-status-list');
+        if (!data.status) {
+          statusList.innerHTML = '<span style="color: var(--accent-green)">✓ 作業ツリーはクリーンです</span>';
+        } else {
+          const lines = data.status.split('\n');
+          statusList.innerHTML = lines.map(line => `<div class="file-item"><span>${line}</span></div>`).join('');
+        }
+
+        const commitsList = document.getElementById('git-commits-list');
+        if (data.commits && data.commits.length > 0) {
+          commitsList.innerHTML = data.commits.map(c => `
+            <div class="commit-item">
+              <span class="commit-hash">${c.hash}</span>
+              <span>${c.message}</span>
+              <div style="font-size: 11px; color: var(--text-muted);">${c.date} by ${c.author}</div>
+            </div>
+          `).join('');
+        }
+
+        const diffEl = document.getElementById('git-diff-content');
+        diffEl.textContent = data.diff ? data.diff : '変更の差分はありません。';
+      } catch (err) {
+        console.error('Failed to load git info:', err);
+      }
+    }
+
+    // Status Loader
+    async function loadStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        document.getElementById('stat-ip').textContent = `http://${data.localIp}:${data.port}`;
+        document.getElementById('stat-dir').textContent = data.workspace;
+        document.getElementById('stat-uptime').textContent = `${Math.floor(data.uptime / 60)} 分`;
+
+        const bridgeOnline = data.bridge && data.bridge.status === 'ok';
+        document.getElementById('status-dot').className = 'status-dot ' + (bridgeOnline ? '' : 'offline');
+        document.getElementById('bridge-status-text').textContent = bridgeOnline ? 'Ready' : 'Bridge Offline';
+
+        // Check codex status
+        const now = new Date();
+        const target = new Date();
+        target.setHours(19, 58, 0, 0);
+        const diffSec = Math.floor((target - now) / 1000);
+
+        const codexEl = document.getElementById('stat-codex');
+        if (diffSec > 0) {
+          const m = Math.floor(diffSec / 60);
+          const s = diffSec % 60;
+          codexEl.textContent = `レート制限中 (19:58 リセット / 残り約${m}分)`;
+          codexEl.style.color = 'var(--accent-orange)';
+        } else {
+          codexEl.textContent = '利用可能 (リセット完了)';
+          codexEl.style.color = 'var(--accent-green)';
+        }
+      } catch (err) {
+        console.error('Failed to load status:', err);
+      }
+    }
+
+    // Terminal Commands
+    async function runCmd(command) {
+      document.getElementById('cmd-input').value = command;
+      await submitCmd();
+    }
+
+    async function submitCmd() {
+      const input = document.getElementById('cmd-input');
+      const command = input.value.trim();
+      if (!command) return;
+
+      const output = document.getElementById('term-output');
+      output.textContent += `\n$ ${command}\n実行中...`;
+      output.scrollTop = output.scrollHeight;
+
+      try {
+        const res = await fetch('/api/exec', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command }),
+        });
+        const data = await res.json();
+        output.textContent = `$ ${command}\n` + (data.stdout || '') + (data.stderr || '');
+      } catch (err) {
+        output.textContent += `\nエラー: ${err.message}`;
+      }
+      output.scrollTop = output.scrollHeight;
+    }
+
+    // Initial load
+    loadStatus();
+    setInterval(loadStatus, 15000);
+  </script>
+</body>
+</html>

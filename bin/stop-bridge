@@ -1,9 +1,15 @@
 #!/bin/bash
-# Stop Open-Cursor Bridge
+# Stop Open-Cursor Bridge & Mobile Dashboard
 PID_FILE="$HOME/.cursor-codex-bridge/bridge.pid"
 if [ -f "$PID_FILE" ]; then
   kill "$(cat "$PID_FILE")" 2>/dev/null && echo "Bridge stopped" || echo "Bridge not running"
   rm -f "$PID_FILE"
 else
-  echo "No PID file found"
+  echo "No Bridge PID file found"
+fi
+
+MOBILE_PID_FILE="$HOME/.cursor-codex-bridge/mobile.pid"
+if [ -f "$MOBILE_PID_FILE" ]; then
+  kill "$(cat "$MOBILE_PID_FILE")" 2>/dev/null && echo "Mobile dashboard stopped" || echo "Mobile dashboard not running"
+  rm -f "$MOBILE_PID_FILE"
 fi

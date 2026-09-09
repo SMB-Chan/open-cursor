@@ -7,3 +7,4 @@ bridge.log
 bridge.pid
 *.log
 
+collaboration-verification.json

@@ -153,3 +153,70 @@ test("partial structured output is never retried as a write-capable task", () =>
     .filter((args) => args[0] !== "models");
   assert.equal(calls.length, 1);
 });
+
+test("formatToolSummary and renderStepProgressBar format visual indicators", () => {
+  const summary = adapter.formatToolSummary("search_web", { query: "timetable" });
+  assert.equal(summary.icon, "🌐");
+  assert.equal(summary.action, "Web調査");
+  assert.equal(summary.detail, "timetable");
+  assert.match(summary.reasoning, /検索/);
+
+  const bar1 = adapter.renderStepProgressBar(1);
+  assert.match(bar1, /▰/);
+  assert.match(bar1, /%/);
+
+  const bar5 = adapter.renderStepProgressBar(5);
+  assert.match(bar5, /▰/);
+});
+
+test("stream parser emits visual progress bar and reasoning summary for autonomous tool steps", () => {
+  const chunks = [];
+  const parser = adapter.createStreamParser((text) => chunks.push(text));
+  const ndjson = [
+    JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 1,
+        state: "ACTIVE",
+        step_type: "tool",
+        tool_name: "search_web",
+        tool_info: { name: "search_web", parameters: { query: "train timetable" } },
+      },
+    }),
+    JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 1,
+        state: "DONE",
+        step_type: "tool",
+        tool_name: "search_web",
+        duration_seconds: 0.8,
+      },
+    }),
+    JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_index: 2,
+        state: "ACTIVE",
+        step_type: "agent_response",
+        text_delta: "Final answer generated.",
+      },
+    }),
+    JSON.stringify({
+      event: "result",
+      result: { status: "SUCCESS", response: "Final answer generated." },
+    }),
+  ].join("\n") + "\n";
+
+  parser.feed(ndjson);
+  const result = parser.finish();
+  const allOutput = chunks.join("");
+
+  assert.match(allOutput, /Web調査/);
+  assert.match(allOutput, /train timetable/);
+  assert.match(allOutput, /▰/);
+  assert.match(allOutput, /0\.8秒/);
+  assert.match(allOutput, /自律処理完了/);
+  assert.match(allOutput, /Final answer generated\./);
+  assert.equal(result.toolStepCount, 1);
+});
