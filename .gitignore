@@ -5,6 +5,9 @@ verification.json
 node_modules/
 bridge.log
 bridge.pid
+*.pid
+*.token
 *.log
+run/
 
 collaboration-verification.json
