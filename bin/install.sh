@@ -316,6 +316,11 @@ chmod +x "$BRIDGE_DIR/bin/open-cursor-app"
 chmod +x "$BRIDGE_DIR/bin/stop-bridge"
 chmod +x "$BRIDGE_DIR/server/index.js" 2>/dev/null || true
 
+mkdir -p "$HOME/.local/bin"
+ln -sf "$BRIDGE_DIR/bin/open-cursor" "$HOME/.local/bin/open-cursor"
+ln -sf "$BRIDGE_DIR/bin/open-cursor-app" "$HOME/.local/bin/open-cursor-app"
+ln -sf "$BRIDGE_DIR/bin/stop-bridge" "$HOME/.local/bin/stop-bridge"
+
 # ── Summary ──────────────────────────────────────────────
 
 echo ""
