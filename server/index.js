@@ -111,7 +111,10 @@ function assertAgentsEnabled(mode) {
 }
 
 async function resolveWorkspacePath(rawPath) {
-  const candidate = rawPath ? String(rawPath) : process.cwd();
+  let candidate = rawPath ? String(rawPath) : process.cwd();
+  try {
+    candidate = decodeURIComponent(candidate);
+  } catch {}
   if (!isAbsolute(candidate)) {
     throw new HttpError(400, "X-Workspace-Path must be an absolute path");
   }
