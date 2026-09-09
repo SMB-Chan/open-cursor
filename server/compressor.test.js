@@ -2,6 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   clipByBytes,
+  clipCodeBody,
+  clipUtf8Safe,
+  clipUtf8MiddleOut,
   compressMessages,
   compressHandoff,
   compressGitDiff,
@@ -109,12 +112,133 @@ test("compressGitDiff ignores lockfiles and truncates massive hunks", () => {
   ].join("\n");
 
   const result = compressGitDiff(diff, 2048, 50);
-  assert.ok(result.includes("package-lock.json omitted"));
+  // Lockfiles are dropped entirely but remain discoverable via the omission index.
+  assert.ok(result.includes("package-lock.json (machine-generated; omitted entirely)"));
   assert.ok(result.includes("src/app.js"));
+  // Well-formed output: the surviving hunk keeps its diff --git marker.
+  assert.ok(result.startsWith("diff --git "));
 });
 
 test("safePromptArg guarantees argument stays under 64 KB", () => {
   const hugePrompt = "a".repeat(200 * 1024);
   const safe = safePromptArg(hugePrompt);
   assert.ok(Buffer.byteLength(safe, "utf8") <= MAX_CLI_ARG_BYTES);
+});
+
+// ── v2.9.0: prompt-quality-preserving compression ──────────────────────────
+
+test("clipUtf8Safe never splits multi-byte characters or produces mojibake", () => {
+  const japanese = "あ".repeat(300); // 3 bytes per char
+  const clipped = clipUtf8Safe(japanese, 100);
+  assert.ok(Buffer.byteLength(clipped, "utf8") <= 100);
+  assert.ok(!clipped.includes("\uFFFD"), "no replacement characters allowed");
+  // Idempotent: re-clipping is a no-op.
+  assert.equal(clipUtf8Safe(clipped, 100), clipped);
+});
+
+test("clipUtf8MiddleOut keeps BOTH head and tail (report/verdict survives)", () => {
+  const head = "## Header and early context\n" + "filler ".repeat(50);
+  const tail = "\n## Report\n- Files changed: src/app.js — final verdict lines";
+  const payload = head + "MIDDLE".repeat(2000) + tail;
+
+  const clipped = clipUtf8MiddleOut(payload, 600);
+  assert.ok(Buffer.byteLength(clipped, "utf8") <= 600);
+  assert.ok(clipped.startsWith("## Header"), "head preserved");
+  assert.ok(clipped.includes("final verdict lines"), "tail preserved");
+  assert.ok(clipped.includes("middle omitted"), "omission is explicit");
+  // Verify the byte math is honest: it really reports the original size.
+  assert.ok(clipped.includes("middle omitted by the handoff compressor"));
+});
+
+test("compressHandoff attaches an anti-hallucination manifest when truncating", () => {
+  const big = "line\n".repeat(500);
+  const out = compressHandoff(big, { phase: "plan", maxBytes: 400 });
+  assert.match(out, /\[HANDOFF plan\]/);
+  assert.match(out, /Content was dropped/);
+  assert.match(out, /invent nothing/);
+  assert.match(out, /ground truth = workspace files \+ Git diff/);
+  // Manifest carries the honest byte math.
+  assert.match(out, /payload \d+B → \d+B \(budget 400B\)/);
+});
+
+test("compressHandoff marks untruncated payloads as complete", () => {
+  const small = "small payload";
+  const out = compressHandoff(small, { phase: "plan", maxBytes: 400 });
+  // Under budget: returned untouched, no manifest noise.
+  assert.equal(out, small);
+});
+
+test("implementation compression prefers parseable report lines over code bodies", () => {
+  const bigFence = "const data = " + JSON.stringify({ blob: "x".repeat(4000) }) + ";";
+  const structured = [
+    "Ran the change.",
+    "```js",
+    bigFence,
+    "```",
+    "## Report",
+    "- Files changed: server/engine.js — modify — guard added",
+    "- Commands run: npm test — pass 90/90",
+    "- Deviations: none",
+  ].join("\n");
+
+  const out = compressHandoff(structured, { phase: "implementation", maxBytes: 600 });
+  assert.ok(out.includes("## Report"), "report header survives");
+  assert.ok(out.includes("Files changed: server/engine.js"), "file list survives");
+  assert.ok(out.includes("pass 90/90"), "test status survives");
+  assert.ok(out.includes("Deviations: none"), "deviations survive");
+  // The huge fence body is dropped with an explicit note, not silently.
+  assert.ok(out.includes("lines of code omitted") || out.includes("middle omitted"));
+  assert.ok(Buffer.byteLength(out, "utf8") <= 600 + 220, "stays near budget (manifest excluded)");
+});
+
+test("review compression keeps numbered findings and verdicts, drops prose", () => {
+  const findings = [
+    "## Verdict",
+    "fix-required",
+    "",
+    "## Findings",
+    "1. src/app.js:12 — missing null guard — add guard",
+    "2. src/app.js:40 — swallowed error — rethrow with context",
+    "",
+    "General prose observation ".repeat(40),
+  ].join("\n");
+  const out = compressHandoff(findings, { phase: "review", maxBytes: 320 });
+  assert.ok(out.includes("## Verdict"));
+  assert.ok(out.includes("fix-required"));
+  assert.ok(out.includes("1. src/app.js:12"));
+  assert.ok(out.includes("2. src/app.js:40"));
+});
+
+test("giant single lines inside code blocks are capped, not kept whole", () => {
+  const giantLine = "const huge = '" + "a".repeat(20000) + "';";
+  const body = clipCodeBody(giantLine, 40);
+  assert.ok(Buffer.byteLength(body, "utf8") < 500, `line capped, got ${Buffer.byteLength(body, "utf8")}B`);
+  assert.ok(body.includes("line middle omitted"));
+});
+
+test("compressGitDiff: every file after the budget is still discoverable", () => {
+  const files = [];
+  for (let i = 0; i < 40; i++) {
+    files.push(
+      [
+        `diff --git a/src/module${i}.js b/src/module${i}.js`,
+        "index 111..222 100644",
+        `+ // change ${i} ` + "x".repeat(120),
+      ].join("\n")
+    );
+  }
+  const result = compressGitDiff(files.join("\n"), 3000, 20);
+  // Later files must not silently vanish: either their hunk or their name appears.
+  let found = 0;
+  for (let i = 0; i < 40; i++) {
+    if (result.includes(`module${i}.js`)) found++;
+  }
+  assert.equal(found, 40, "all 40 file paths must be discoverable");
+});
+
+test("compression is deterministic across runs", () => {
+  const payload = "deterministic content\n".repeat(80);
+  const a = compressHandoff(payload, { phase: "plan", maxBytes: 500 });
+  const b = compressHandoff(payload, { phase: "plan", maxBytes: 500 });
+  assert.equal(a, b);
 });

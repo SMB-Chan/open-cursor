@@ -218,11 +218,12 @@ test("collaboration prompts separate untrusted review context from write instruc
     "src/parser.js"
   );
   assert.match(review, /Do not modify files/i);
-  assert.match(review, /Current Git changes/i);
+  assert.match(review, /# Ground truth: Git changes actually made/i);
 
   const refinement = buildRefinementPrompt("Fix parser", "Review", " M parser.js");
   assert.match(refinement, /verify each point/i);
   assert.match(refinement, /preserve unrelated user changes/i);
+  assert.match(refinement, /# Ground truth: current Git changes/i);
 });
 
 test("collaborative formatter preserves all sequential phases", () => {

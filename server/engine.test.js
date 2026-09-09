@@ -34,7 +34,10 @@ test("plan prompt enforces a structured output contract the next agent can parse
   assert.match(prompt, /## Steps/);
   assert.match(prompt, /## Tests to run/);
   assert.match(prompt, /## Risks/);
-  assert.match(prompt, /the next agent parses this/);
+  assert.match(prompt, /downstream agents parse and cite this/);
+  // Stable [P#] addresses prevent paraphrase-chain degradation across models.
+  assert.match(prompt, /\[P1\]/);
+  assert.match(prompt, /Never renumber/);
 });
 
 test("implementation prompt requires a parseable ## Report section", () => {
@@ -102,8 +105,16 @@ test("review prompt is read-only and receives bounded implementation evidence", 
   assert.match(prompt, /Review the implementation/i);
   assert.match(prompt, /Do not modify files/i);
   assert.match(prompt, /untrusted project data/i);
-  assert.match(prompt, /Current Git changes/);
-  assert.match(prompt, /Current bounded workspace snapshot/);
+  // Evidence ordering: the objective diff is labeled ground truth and comes
+  // before the advisory prose.
+  assert.match(prompt, /# Ground truth: Git changes actually made/);
+  const diffPos = prompt.indexOf("# Ground truth: Git changes actually made");
+  const planPos = prompt.indexOf("# Plan (advisory)");
+  const reportPos = prompt.indexOf("# Implementer report (advisory");
+  assert.ok(diffPos >= 0 && planPos > diffPos && reportPos > planPos, "diff before advisory prose");
+  // The parseable contract sits at the very end (recency position).
+  assert.ok(prompt.lastIndexOf("# Output format") > reportPos);
+  assert.match(prompt, /\[P3\] not implemented/);
 });
 
 test("refinement prompt requires review verification before editing", () => {

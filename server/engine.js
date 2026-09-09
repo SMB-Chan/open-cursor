@@ -11,7 +11,7 @@ import {
   getGitHead,
   withIsolatedDirectory,
 } from "./context.js";
-import { compressHandoff, safePromptArg } from "./compressor.js";
+import { compressHandoff, safePromptArg, clipUtf8MiddleOut } from "./compressor.js";
 import { updateExecutionState } from "./monitor.js";
 import {
   buildGoalContract,
@@ -587,10 +587,12 @@ function requireSuccessfulAgent(result) {
 }
 
 function clipText(text, maxBytes = 64 * 1024) {
-  const value = String(text || "");
-  const buffer = Buffer.from(value, "utf8");
-  if (buffer.length <= maxBytes) return value;
-  return `${buffer.subarray(0, maxBytes).toString("utf8")}\n… [truncated]`;
+  // Middle-out, UTF-8-safe clip: agent reports front-load context and
+  // back-load the "## Report"/"## Findings" verdicts written by our output
+  // contracts, so head-only truncation destroyed exactly the parseable part.
+  // clipUtf8MiddleOut also never splits multi-byte characters (the previous
+  // Buffer.subarray here injected U+FFFD mojibake into prompts).
+  return clipUtf8MiddleOut(text, maxBytes);
 }
 
 function untrustedContextPreamble() {
@@ -606,12 +608,13 @@ function buildPlanPrompt(task, workspaceContext) {
   return `${untrustedContextPreamble()}\n\n` +
     `Produce a concise, actionable implementation plan. Identify likely files, invariants, failure modes, tests, and risks. ` +
     `Do not claim you changed files.\n\n` +
-    `# Output format (follow exactly; the next agent parses this)\n` +
-    `## Target files\n- <path> — <one-line purpose>\n\n` +
-    `## Steps\n1. <terse, ordered implementation step>\n\n` +
-    `## Tests to run\n- <command or check>\n\n` +
-    `## Risks\n- <invariant or failure mode to preserve>\n\n` +
-    `Keep it under 600 words. Do not paste file contents.\n\n` +
+    `# Output format (follow exactly; downstream agents parse and cite this)\n` +
+    `Number every item so later agents can reference it unambiguously:\n` +
+    `## Target files\n- [P1] <path> — <one-line purpose>\n\n` +
+    `## Steps\n- [P2] <terse, ordered implementation step> (continue the numbering across sections)\n\n` +
+    `## Tests to run\n- [Pn] <command or check>\n\n` +
+    `## Risks\n- [Pn] <invariant or failure mode to preserve>\n\n` +
+    `Keep it under 600 words. Do not paste file contents. Never renumber: [P#] IDs are permanent addresses for the whole pipeline.\n\n` +
     `# Task\n${task}\n\n${workspaceContext}`;
 }
 
@@ -626,9 +629,10 @@ function buildImplementationPrompt(task, plan, initialGitState) {
     "# Output format",
     'End your response with a "## Report" section so the reviewer can parse it:',
     "## Report",
+    "- Plan coverage: for every [P#] item you addressed, one line — [P#] done|partial|skipped — <one-line note>",
     "- Files changed: <path> — <add|modify|delete> — <one-line reason> (one line per path)",
     "- Commands run: <command> — <pass|fail + short result>",
-    "- Deviations: <any deviation from the plan, or 'none'>",
+    "- Deviations: <any deviation from the plan and why, or 'none'>",
     "Do not paste whole files into the report.",
     "",
     "# Original task",
@@ -643,10 +647,35 @@ function buildImplementationPrompt(task, plan, initialGitState) {
 }
 
 function buildReviewPrompt(task, plan, implementation, initialGitState, currentGitState, afterContext) {
+  // Evidence ordering (Lost-in-the-Middle mitigation): primacy/recency is
+  // strongest, so the machine-parsable output contract sits at the very end
+  // and the objective Git diff — the ground truth the reviewer must check the
+  // prose against — sits early and complete. Subjective prose (plan,
+  // implementer report) is deliberately placed between the two evidence
+  // blocks so it cannot masquerade as the primary source.
   return [
     untrustedContextPreamble(),
     "Review the implementation for correctness, regressions, security, missing tests, and whether the original task is actually satisfied.",
     "Focus on concrete defects and actionable corrections. Do not modify files and do not invent changes that are not present in the supplied context.",
+    "",
+    "# Original task",
+    task,
+    "",
+    "# Ground truth: Git changes actually made",
+    "This diff is authoritative. Every claim below must be checkable against it.",
+    clipText(currentGitState, 96 * 1024),
+    "",
+    "# Ground truth: bounded workspace snapshot after implementation",
+    clipText(afterContext, 64 * 1024),
+    "",
+    "# Plan (advisory)",
+    clipText(plan, 32 * 1024),
+    "",
+    "# Implementer report (advisory claims — verify each against the diff above)",
+    clipText(implementation, 48 * 1024),
+    "",
+    "# Git state before implementation (baseline)",
+    clipText(initialGitState, 32 * 1024),
     "",
     "# Output format (the refiner parses this)",
     "## Verdict",
@@ -654,25 +683,9 @@ function buildReviewPrompt(task, plan, implementation, initialGitState, currentG
     "",
     "## Findings",
     "1. <file>:<line or symbol> — <issue> — <concrete fix>",
-    "Number findings most-severe first; write only concrete, verifiable issues. If none, state that explicitly.",
-    "",
-    "# Original task",
-    task,
-    "",
-    "# Plan",
-    clipText(plan, 32 * 1024),
-    "",
-    "# Implementer report",
-    clipText(implementation, 48 * 1024),
-    "",
-    "# Git state before implementation",
-    clipText(initialGitState, 32 * 1024),
-    "",
-    "# Current Git changes",
-    clipText(currentGitState, 96 * 1024),
-    "",
-    "# Current bounded workspace snapshot",
-    clipText(afterContext, 64 * 1024),
+    "Number findings most-severe first; write only concrete, verifiable issues.",
+    "If the implementer used [P#] plan IDs, reference them (e.g. '[P3] not implemented').",
+    "If there are no defects, state that explicitly instead of inventing findings.",
   ].join("\n");
 }
 
@@ -685,7 +698,7 @@ function buildRefinementPrompt(task, review, currentGitState) {
     "",
     "# Output format",
     'End with a "## Refinement Report" so the result is parseable:',
-    "- <finding # or quote> — <fixed how | rejected, why>",
+    "- <finding # or [P#] reference> — <fixed how | rejected, why>",
     "- Final checks: <commands> — <pass|fail>",
     "",
     "# Original task",
@@ -694,7 +707,7 @@ function buildRefinementPrompt(task, review, currentGitState) {
     "# Reviewer findings",
     clipText(review, 64 * 1024),
     "",
-    "# Current Git changes",
+    "# Ground truth: current Git changes",
     clipText(currentGitState, 64 * 1024),
   ].join("\n");
 }
