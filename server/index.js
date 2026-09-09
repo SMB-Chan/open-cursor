@@ -40,6 +40,7 @@ const ROUTING_MODES = new Set([
   "mimo",
   "mimo-gemini",
   "auto",
+  "autonomous",
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -94,6 +95,7 @@ function parseAgentSelection(modelName, headerMode) {
 function requiredAgentsForMode(mode) {
   if (mode === "codex") return ["codex"];
   if (mode === "antigravity") return ["antigravity"];
+  if (mode === "autonomous") return ["antigravity"];
   if (mode === "mimo") return ["mimo"];
   if (mode === "mimo-gemini") return ["mimo", "antigravity"];
   if (mode === "pipeline" || mode === "collaborative") return ["codex", "antigravity"];
@@ -420,6 +422,12 @@ async function handleModels(req, res) {
       object: "model",
       owned_by: "bridge",
       description: "Auto (自動判別: プロンプト内容から Gemini / MiMo / 協調モードを最適自動選択)",
+    },
+    {
+      id: "autonomous",
+      object: "model",
+      owned_by: "bridge",
+      description: "Autonomous Agent (explicit write mode: auto-approved file edits and commands)",
     },
   ];
 

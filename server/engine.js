@@ -291,11 +291,19 @@ function mapAntigravityModel(model) {
 }
 
 function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
-  const args = [`-p=${prompt}`, "--output-format", "text", "--dangerously-skip-permissions"];
+  const actualCwd = cwd || process.cwd();
+  const args = [
+    `-p=${prompt}`,
+    "--output-format",
+    "text",
+    "--dangerously-skip-permissions",
+    "--mode",
+    "accept-edits",
+    "--add-dir",
+    actualCwd,
+  ];
   const targetModel = mapAntigravityModel(model);
   if (targetModel) args.push("--model", targetModel);
-
-  const actualCwd = cwd || process.cwd();
   return runProcess({
     agent: "antigravity",
     command: AGY_BIN,
@@ -592,6 +600,28 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         onChunk: (text) =>
           onEvent?.({ text, agent: "antigravity", phase: "response" }),
       });
+      return requireSuccessfulAgent(result);
+    }
+
+    case "autonomous": {
+      emitHeader(
+        onEvent,
+        "> 🚀 **自律エージェントモード (Autonomous / Auto-Approve)**: 手動承認なしでファイルの読み書き・コマンド実行を開始します\n\n",
+        "autonomous",
+        "start"
+      );
+      const actualCwd = cwd || process.cwd();
+      const result = await runAntigravity(
+        `You are an autonomous senior software engineer working in this repository at ${actualCwd}.\n` +
+        `Directly inspect files, edit code on disk, run test/build commands to verify your changes, and fix any errors autonomously without requesting manual user approvals.\n\n` +
+        `# Task:\n${prompt}`,
+        {
+          cwd: actualCwd,
+          model: model || "pro",
+          signal,
+          onChunk: (text) => onEvent?.({ text, agent: "antigravity", phase: "execution" }),
+        }
+      );
       return requireSuccessfulAgent(result);
     }
 

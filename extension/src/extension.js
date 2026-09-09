@@ -475,6 +475,7 @@ function getChatHTML(webview) {
   <div id="input-area">
     <select id="mode" aria-label="Agent routing mode">
       <option value="auto">Auto (自動判別)</option>
+      <option value="autonomous">Autonomous (承認なし全自動)</option>
       <option value="mimo-gemini">MiMo + Gemini</option>
       <option value="collaborative">Collaborative (Codex + Gemini)</option>
       <option value="pipeline">Pipeline</option>
