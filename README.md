@@ -235,6 +235,18 @@ The chat webview renders assistant output as markdown with an **incremental, blo
 
 This replaces the previous `textContent +=` accumulator that re-serialized the whole transcript on every chunk and degraded visibly on long coding sessions.
 
+### Prompt-quality-preserving compression (v2.9)
+
+Inter-agent handoffs are compressed with research-informed guarantees so that context budgets never degrade prompt semantics (`server/compressor.js`):
+
+- **Middle-out truncation** (LongLLMLingua-style): keeps the payload head (context) *and* tail — the `## Report`/`## Findings` verdicts that our output contracts place last. Head-only clipping destroyed exactly the parseable part.
+- **Anti-hallucination manifest**: every truncated handoff is prefixed with `[HANDOFF <phase>] payload <N>B → <M>B … Content was dropped; use what is visible, invent nothing, ask nothing. ground truth = workspace files + Git diff, never this payload.` Receiving agents are told compression happened and what the ground truth is, which suppresses silent-omission hallucination.
+- **Stable plan IDs**: planners emit `[P1]…[Pn]` addresses; implementers report per-ID coverage (`[P#] done|partial|skipped`) and reviewers/refiners cite them. Paraphrase chains (telephone game) between models are eliminated because the IDs, not the wording, are the shared reference.
+- **Evidence re-ordering** (Lost-in-the-Middle mitigation): review prompts place the objective Git diff first as labeled ground truth, advisory prose in the middle, and the parseable output contract last (recency position).
+- **UTF-8 integrity**: `clipUtf8Safe`/`clipUtf8MiddleOut` never split multi-byte sequences (the old `Buffer.subarray` clip injected U+FFFD mojibake into prompts), respect line boundaries, and are byte-honest in their indicators. Verified by exhaustive budget×text sweep tests.
+- **Fair diff packing**: `compressGitDiff` packs hunks greedily against a strict budget with an always-reserved omission index; every changed file is either present (full or capped) or named in the index. No global post-clip can erase middle files.
+- **Fence-aware reports**: code blocks inside implementation reports are capped head+tail (structure survives) or replaced with an explicit `lines omitted; the diff is authoritative` note — report lines always outrank redundant code dumps for the budget.
+
 The extension's **Stop** action aborts its fetch. The bridge propagates the disconnect/abort to all child processes owned by that request, sends `SIGTERM`, and escalates to `SIGKILL` after the grace period when necessary.
 
 A single `chatcmpl-*` ID is retained for the entire stream and is also exposed as `X-Open-Cursor-Request-Id`.

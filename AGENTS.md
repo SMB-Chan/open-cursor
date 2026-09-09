@@ -69,6 +69,13 @@ symlink path; always work in this repository.
 Secret-like paths (.env, keys, credentials, keystores) are omitted from agent
 context and public receipts.
 
+Handoff compression guarantees (v2.9+): truncation is middle-out with the
+parseable tail preserved, always announced via a `[HANDOFF <phase>]` manifest
+that forbids inventing omitted content, UTF-8/line-boundary safe (no mojibake),
+and plan items carry permanent `[P#]` IDs that implementer/reviewer/refiner cite
+verbatim. Do not weaken any of these invariants when touching `compressor.js`
+or the prompt builders in `engine.js` — regression tests pin all of them.
+
 ## How to verify changes
 
 ```bash

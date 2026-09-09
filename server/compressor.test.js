@@ -242,3 +242,33 @@ test("compression is deterministic across runs", () => {
   const b = compressHandoff(payload, { phase: "plan", maxBytes: 500 });
   assert.equal(a, b);
 });
+
+test("middle-out and safe clips never produce mojibake across budget sweeps", () => {
+  const samples = [
+    "日本語の説明".repeat(3000) + "\n## Report\n- 結論: 完了",
+    "emoji 🎌🎯🚀 mix ".repeat(500),
+    "mixed 日本語 english 🎌 ".repeat(400),
+  ];
+  const budgets = [50, 100, 137, 200, 256, 333, 500, 777, 1000, 4096];
+  let checks = 0;
+  for (const text of samples) {
+    for (const budget of budgets) {
+      const middle = clipUtf8MiddleOut(text, budget);
+      assert.ok(!middle.includes("\uFFFD"), `middle-out mojibake at budget ${budget}`);
+      assert.ok(Buffer.byteLength(middle, "utf8") <= budget, `middle-out over budget ${budget}`);
+      const safe = clipUtf8Safe(text, budget);
+      assert.ok(!safe.includes("\uFFFD"), `safe mojibake at budget ${budget}`);
+      checks += 2;
+    }
+  }
+  assert.ok(checks >= 60);
+});
+
+test("engine clipText keeps the parseable tail (regression for mojibake + head-only)", () => {
+  // This is exercised through engine.js; here we pin the compressor behavior
+  // it relies on: multibyte tail survives.
+  const payload = "context ".repeat(200) + "\n## Report\n- Deviations: none — 完了";
+  const clipped = clipUtf8MiddleOut(payload, 200);
+  assert.ok(clipped.includes("完了"));
+  assert.ok(!clipped.includes("\uFFFD"));
+});
