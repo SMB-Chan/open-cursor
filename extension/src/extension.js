@@ -9,6 +9,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
 const { randomBytes } = require("node:crypto");
+const { consumeSse } = require("./sse.js");
 
 const DEFAULT_PORT = 9876;
 const HEALTH_TIMEOUT_MS = 1500;
@@ -258,63 +259,7 @@ function workspacePath() {
   );
 }
 
-async function consumeSse(response, onDelta) {
-  if (!response.body) throw new Error("Bridge returned an empty streaming response");
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let content = "";
-  let done = false;
-
-  const processBlock = (block) => {
-    const data = block
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart())
-      .join("\n");
-
-    if (!data) return false;
-    if (data.trim() === "[DONE]") return true;
-
-    let event;
-    try {
-      event = JSON.parse(data);
-    } catch {
-      return false;
-    }
-
-    const delta = event?.choices?.[0]?.delta?.content;
-    if (typeof delta === "string" && delta.length > 0) {
-      content += delta;
-      onDelta(delta);
-    }
-    return false;
-  };
-
-  while (!done) {
-    const next = await reader.read();
-    if (next.done) {
-      buffer += decoder.decode();
-      break;
-    }
-
-    buffer += decoder.decode(next.value, { stream: true });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() || "";
-    for (const block of blocks) {
-      if (processBlock(block)) {
-        done = true;
-        break;
-      }
-    }
-  }
-
-  if (!done && buffer.trim()) processBlock(buffer);
-  return content;
-}
-
-async function streamMessage(context, prompt, mode, signal, onDelta) {
+async function streamMessage(context, prompt, mode, signal, onEvent) {
   await ensureBridge(context);
 
   const selectedMode = mode || config().get("defaultAgent", "collaborative");
@@ -338,7 +283,7 @@ async function streamMessage(context, prompt, mode, signal, onDelta) {
     throw new Error(payload?.error?.message || `Bridge returned HTTP ${response.status}`);
   }
 
-  return consumeSse(response, onDelta);
+  return consumeSse(response, onEvent);
 }
 
 async function showStatus() {
@@ -390,7 +335,11 @@ function registerChatCommand(context) {
       const controller = new AbortController();
       currentRequest = { id: msg.requestId, controller };
       activeRequests.add(controller);
-      panel.webview.postMessage({ type: "begin", requestId: msg.requestId });
+      panel.webview.postMessage({
+        type: "begin",
+        requestId: msg.requestId,
+        mode: msg.mode,
+      });
 
       try {
         const content = await streamMessage(
@@ -398,7 +347,15 @@ function registerChatCommand(context) {
           msg.text,
           msg.mode,
           controller.signal,
-          (delta) => panel.webview.postMessage({ type: "delta", requestId: msg.requestId, text: delta })
+          (event) =>
+            panel.webview.postMessage({
+              type: "delta",
+              requestId: msg.requestId,
+              text: event.delta,
+              agent: event.agent,
+              phase: event.phase,
+              metadata: event.metadata,
+            })
         );
         if (!controller.signal.aborted) {
           panel.webview.postMessage({ type: "complete", requestId: msg.requestId, empty: !content });
@@ -438,8 +395,16 @@ function activate(context) {
     vscode.commands.registerCommand("openCursor.selectAgent", async () => {
       const mode = await vscode.window.showQuickPick(
         [
-          { label: "Collaborative", description: "Both agents work together", value: "collaborative" },
-          { label: "Pipeline", description: "Gemini analyzes → Codex implements", value: "pipeline" },
+          {
+            label: "Collaborative",
+            description: "Gemini Plan → Codex Implement → Gemini Review → Codex Refine",
+            value: "collaborative",
+          },
+          {
+            label: "Pipeline",
+            description: "Gemini Plan → Codex Implement",
+            value: "pipeline",
+          },
           { label: "Codex Only", description: "ChatGPT/Codex subscription", value: "codex" },
           { label: "Antigravity Only", description: "Gemini subscription", value: "antigravity" },
         ],
@@ -478,9 +443,19 @@ function getChatHTML(webview) {
     #messages { height: calc(100vh - 150px); overflow-y: auto; margin-bottom: 10px; }
     .msg { padding: 8px 12px; margin: 6px 0; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .user { background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); }
-    .assistant { background: var(--vscode-editor-inactiveSelectionBackground); }
+    .assistant-card { margin: 8px 0; border: 1px solid var(--vscode-widget-border); border-radius: 8px; overflow: hidden; background: var(--vscode-editor-inactiveSelectionBackground); }
+    .run-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 10px; border-bottom: 1px solid var(--vscode-widget-border); background: var(--vscode-sideBar-background); }
+    .agent-badge { font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); white-space: nowrap; }
+    .phase-strip { display: flex; gap: 5px; flex-wrap: wrap; min-width: 0; }
+    .phase-pill { font-size: 10px; line-height: 1; padding: 4px 7px; border-radius: 999px; border: 1px solid var(--vscode-widget-border); color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); }
+    .phase-pill.active { color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+    .phase-pill.done::before { content: '✓ '; }
+    .phase-pill.done { color: var(--vscode-testing-iconPassed); }
+    .phase-pill.cancelled { text-decoration: line-through; opacity: .7; }
+    .phase-pill.failed { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+    .assistant-body { padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .assistant-body.thinking { color: var(--vscode-descriptionForeground); font-style: italic; }
     .error { color: var(--vscode-errorForeground); }
-    .thinking { color: var(--vscode-descriptionForeground); font-style: italic; }
     #input-area { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: end; }
     #input { resize: vertical; min-height: 38px; max-height: 180px; padding: 8px; font-family: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
     #mode { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; padding: 8px; }
@@ -488,18 +463,23 @@ function getChatHTML(webview) {
     button { padding: 8px 14px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; }
     button:disabled { opacity: .55; cursor: default; }
     #cancel { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+    @media (max-width: 560px) {
+      #input-area { grid-template-columns: 1fr; }
+      #actions { justify-content: flex-end; }
+      .run-meta { align-items: flex-start; flex-direction: column; gap: 6px; }
+    }
   </style>
 </head>
 <body>
-  <div id="messages"></div>
+  <div id="messages" aria-live="polite"></div>
   <div id="input-area">
-    <select id="mode">
+    <select id="mode" aria-label="Agent routing mode">
       <option value="collaborative">Collaborative</option>
       <option value="pipeline">Pipeline</option>
       <option value="codex">Codex</option>
       <option value="antigravity">Antigravity</option>
     </select>
-    <textarea id="input" placeholder="Ask anything…  Shift+Enter for a new line"></textarea>
+    <textarea id="input" placeholder="Ask anything…  Shift+Enter for a new line" aria-label="Message"></textarea>
     <div id="actions">
       <button id="cancel" disabled>Stop</button>
       <button id="send">Send</button>
@@ -512,9 +492,23 @@ function getChatHTML(webview) {
     const mode = document.getElementById('mode');
     const sendButton = document.getElementById('send');
     const cancelButton = document.getElementById('cancel');
+
+    const PHASE_LABELS = {
+      plan: 'Plan',
+      implement: 'Implement',
+      review: 'Review',
+      refine: 'Refine',
+      respond: 'Respond'
+    };
+
     let activeRequestId = null;
-    let assistantNode = null;
+    let assistantCard = null;
+    let assistantBody = null;
+    let phaseStrip = null;
+    let agentBadge = null;
+    let activePhase = null;
     let receivedDelta = false;
+    let phaseNodes = new Map();
 
     function addMsg(text, cls) {
       const div = document.createElement('div');
@@ -523,6 +517,109 @@ function getChatHTML(webview) {
       messages.appendChild(div);
       messages.scrollTop = messages.scrollHeight;
       return div;
+    }
+
+    function phaseKey(rawPhase) {
+      const phase = String(rawPhase || '').replace(/-header$/, '');
+      if (phase === 'planning' || phase === 'analysis') return 'plan';
+      if (phase === 'implementation') return 'implement';
+      if (phase === 'review') return 'review';
+      if (phase === 'refinement') return 'refine';
+      if (phase === 'response') return 'respond';
+      return phase || null;
+    }
+
+    function agentLabel(agent) {
+      if (agent === 'antigravity') return 'Gemini';
+      if (agent === 'codex') return 'Codex';
+      if (agent === 'collaborative') return 'Collaborative';
+      if (agent === 'pipeline') return 'Pipeline';
+      return agent || 'Starting';
+    }
+
+    function phaseSequence(selectedMode) {
+      if (selectedMode === 'collaborative') return ['plan', 'implement', 'review', 'refine'];
+      if (selectedMode === 'pipeline') return ['plan', 'implement'];
+      return ['respond'];
+    }
+
+    function createAssistant(selectedMode) {
+      assistantCard = document.createElement('div');
+      assistantCard.className = 'assistant-card';
+
+      const meta = document.createElement('div');
+      meta.className = 'run-meta';
+
+      agentBadge = document.createElement('span');
+      agentBadge.className = 'agent-badge';
+      agentBadge.textContent = 'Starting';
+      meta.appendChild(agentBadge);
+
+      phaseStrip = document.createElement('div');
+      phaseStrip.className = 'phase-strip';
+      phaseNodes = new Map();
+      for (const phase of phaseSequence(selectedMode)) {
+        const pill = document.createElement('span');
+        pill.className = 'phase-pill';
+        pill.dataset.phase = phase;
+        pill.textContent = PHASE_LABELS[phase] || phase;
+        phaseNodes.set(phase, pill);
+        phaseStrip.appendChild(pill);
+      }
+      meta.appendChild(phaseStrip);
+
+      assistantBody = document.createElement('div');
+      assistantBody.className = 'assistant-body thinking';
+      assistantBody.textContent = 'Starting…';
+
+      assistantCard.appendChild(meta);
+      assistantCard.appendChild(assistantBody);
+      messages.appendChild(assistantCard);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function ensurePhaseNode(phase) {
+      if (!phase || !phaseStrip) return null;
+      if (phaseNodes.has(phase)) return phaseNodes.get(phase);
+
+      const pill = document.createElement('span');
+      pill.className = 'phase-pill';
+      pill.dataset.phase = phase;
+      pill.textContent = PHASE_LABELS[phase] || phase;
+      phaseNodes.set(phase, pill);
+      phaseStrip.appendChild(pill);
+      return pill;
+    }
+
+    function updateExecutionMeta(agent, rawPhase) {
+      const phase = phaseKey(rawPhase);
+      if (!phase) return;
+
+      if (activePhase && activePhase !== phase) {
+        const previous = phaseNodes.get(activePhase);
+        if (previous) {
+          previous.classList.remove('active');
+          previous.classList.add('done');
+        }
+      }
+
+      const node = ensurePhaseNode(phase);
+      if (node) {
+        node.classList.remove('done', 'cancelled', 'failed');
+        node.classList.add('active');
+      }
+      activePhase = phase;
+      if (agentBadge) {
+        agentBadge.textContent = agentLabel(agent) + ' · ' + (PHASE_LABELS[phase] || phase);
+      }
+    }
+
+    function settleActivePhase(state) {
+      if (!activePhase) return;
+      const node = phaseNodes.get(activePhase);
+      if (!node) return;
+      node.classList.remove('active');
+      if (state) node.classList.add(state);
     }
 
     function setBusy(busy) {
@@ -545,8 +642,13 @@ function getChatHTML(webview) {
 
     function finish() {
       activeRequestId = null;
-      assistantNode = null;
+      assistantCard = null;
+      assistantBody = null;
+      phaseStrip = null;
+      agentBadge = null;
+      activePhase = null;
       receivedDelta = false;
+      phaseNodes = new Map();
       setBusy(false);
     }
 
@@ -566,33 +668,47 @@ function getChatHTML(webview) {
       if (msg.requestId !== activeRequestId) return;
 
       if (msg.type === 'begin') {
-        assistantNode = addMsg('Thinking…', 'assistant thinking');
-        receivedDelta = false;
+        createAssistant(msg.mode || mode.value);
       } else if (msg.type === 'delta') {
-        if (!assistantNode) assistantNode = addMsg('', 'assistant');
-        if (!receivedDelta) {
-          assistantNode.textContent = '';
-          assistantNode.classList.remove('thinking');
-          receivedDelta = true;
+        if (!assistantCard) createAssistant(mode.value);
+        updateExecutionMeta(msg.agent, msg.phase);
+
+        if (typeof msg.text === 'string' && msg.text.length > 0) {
+          if (!receivedDelta) {
+            assistantBody.textContent = '';
+            assistantBody.classList.remove('thinking');
+            receivedDelta = true;
+          }
+          assistantBody.textContent += msg.text;
+          messages.scrollTop = messages.scrollHeight;
         }
-        assistantNode.textContent += msg.text;
-        messages.scrollTop = messages.scrollHeight;
       } else if (msg.type === 'complete') {
-        if (assistantNode && !receivedDelta) {
-          assistantNode.textContent = msg.empty ? 'No response' : assistantNode.textContent;
-          assistantNode.classList.remove('thinking');
+        settleActivePhase('done');
+        if (agentBadge) agentBadge.textContent = 'Complete';
+        if (assistantBody && !receivedDelta) {
+          assistantBody.textContent = msg.empty ? 'No response' : assistantBody.textContent;
+          assistantBody.classList.remove('thinking');
         }
         finish();
       } else if (msg.type === 'cancelled') {
-        if (assistantNode) {
-          if (!receivedDelta) assistantNode.textContent = 'Cancelled.';
-          else assistantNode.textContent += '\n\n[Cancelled]';
-          assistantNode.classList.remove('thinking');
+        settleActivePhase('cancelled');
+        if (agentBadge) agentBadge.textContent = 'Cancelled';
+        if (assistantBody) {
+          if (!receivedDelta) assistantBody.textContent = 'Cancelled.';
+          else assistantBody.textContent += '\n\n[Cancelled]';
+          assistantBody.classList.remove('thinking');
         }
         finish();
       } else if (msg.type === 'error') {
-        if (assistantNode) assistantNode.remove();
-        addMsg(msg.text, 'error');
+        settleActivePhase('failed');
+        if (agentBadge) agentBadge.textContent = 'Failed';
+        if (assistantBody) {
+          assistantBody.textContent = msg.text;
+          assistantBody.classList.remove('thinking');
+          assistantBody.classList.add('error');
+        } else {
+          addMsg(msg.text, 'error');
+        }
         finish();
       }
     });
