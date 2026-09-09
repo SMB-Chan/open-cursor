@@ -16,6 +16,8 @@ Current agent backends:
 ```text
 Cursor extension
     │
+    │  manages local bridge lifecycle
+    │  consumes SSE chat responses
     ▼
 127.0.0.1:9876
 Open-Cursor bridge
@@ -65,33 +67,57 @@ The installer:
 
 It refuses to overwrite an existing `~/.cursor-codex-bridge` that points to a different installation.
 
-## Start
+## Start and bridge lifecycle
 
-To start the bridge and launch Cursor:
+By default the extension activates after Cursor starts and automatically starts the local bridge. The status bar shows the bridge state and opens the status view when clicked.
+
+If a bridge is already running on the configured port, the extension reuses it instead of spawning another process. The extension only stops a bridge process that it started itself; externally started bridge processes are deliberately left untouched.
+
+Available commands:
+
+```text
+Open-Cursor: Chat with Agents
+Open-Cursor: Start Bridge Server
+Open-Cursor: Stop Managed Bridge Server
+Open-Cursor: Show Agent Status
+Open-Cursor: Select Agent (Codex/Antigravity/Collaborative)
+```
+
+Manual launch remains available:
 
 ```bash
 ~/.cursor-codex-bridge/bin/open-cursor-app
 ```
 
-To start only the bridge and print its status:
+To start only the bridge from a shell:
 
 ```bash
 ~/.cursor-codex-bridge/bin/open-cursor
 ```
 
-To stop the bridge:
+The legacy shell-managed bridge can still be stopped with:
 
 ```bash
 ~/.cursor-codex-bridge/bin/stop-bridge
 ```
 
-Inside Cursor, open the command palette and use:
+## Chat UX
 
-```text
-Open-Cursor: Chat with Agents
-```
+The extension requests OpenAI-compatible SSE responses and renders deltas incrementally. This means the UI is already prepared for true process-level streaming from the bridge rather than waiting for one complete response.
 
-Other commands include agent selection and bridge status display.
+The chat panel also provides a **Stop** button. Cancelling closes the extension-side request immediately. The bridge-side child-process cancellation path is being implemented next so the upstream CLI process is also terminated when the client disconnects.
+
+## Extension settings
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `openCursor.bridgePort` | `9876` | Local bridge port |
+| `openCursor.autoStartBridge` | `true` | Start the bridge after Cursor finishes starting |
+| `openCursor.nodePath` | `node` | Node.js executable used for the managed bridge |
+| `openCursor.defaultAgent` | `collaborative` | Default routing mode |
+| `openCursor.workspacePath` | empty | Override workspace path; otherwise the first open workspace is used |
+
+The extension is dependency-free at runtime and loads `extension/src/extension.js` directly. There is no generated extension bundle to keep in sync.
 
 ## Routing modes
 
@@ -154,6 +180,8 @@ Current protections include:
 - browser-origin requests rejected on `/v1/chat/completions`
 - request body size limits
 - validation of routing headers and workspace paths
+- webview Content Security Policy
+- managed-process ownership: the extension does not kill a bridge process it did not start
 
 Do **not** expose the bridge directly to a LAN or the public Internet. If remote access is added later, place a real authenticated transport boundary in front of it first.
 
@@ -167,12 +195,11 @@ npm run check
 npm test
 ```
 
-Extension build:
+Extension syntax check:
 
 ```bash
 cd extension
-npm ci
-npm run build
+npm run check
 ```
 
 The repository CI checks:
@@ -180,9 +207,16 @@ The repository CI checks:
 - shell script syntax
 - server JavaScript syntax
 - bridge regression tests
-- extension build
-- reproducibility of `extension/dist/extension.js`
+- dependency-free extension source syntax
 
 ## Project status
 
-Open-Cursor is still early-stage. The current priority is making the local bridge safe and reproducible first, then improving the extension UX, cancellation/streaming behavior, installer upgrades, and broader agent orchestration.
+Open-Cursor is still early-stage. The current foundation now includes a hardened localhost boundary, reproducible installation, managed bridge lifecycle, status reporting, streaming-capable chat UI, and cancellation controls.
+
+The next priorities are:
+
+1. bind request disconnect/abort to the spawned CLI process
+2. stream child-process stdout directly through SSE
+3. add per-request execution timeouts and structured execution metadata
+4. improve collaborative orchestration so agents critique and refine each other's work instead of merely concatenating responses
+5. add an upgrade path and release packaging once the execution core stabilizes
