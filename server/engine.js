@@ -904,11 +904,11 @@ function analyzeTask(prompt) {
   if (hasImplementation) {
     return { routing: "codex", reason: "implementation task", kind: "write", requiresWorkspaceWrite: true };
   }
-  if (hasAnalysis) {
-    return { routing: "antigravity", reason: "analysis task", kind: "analysis", requiresWorkspaceWrite: false };
-  }
   if (hasContinuation) {
     return { routing: "collaborative", reason: "complex multi-step task", kind: "complex-write", requiresWorkspaceWrite: true };
+  }
+  if (hasAnalysis) {
+    return { routing: "antigravity", reason: "analysis task", kind: "analysis", requiresWorkspaceWrite: false };
   }
   return { routing: "antigravity", reason: "general read-only task", kind: "general", requiresWorkspaceWrite: false };
 }
