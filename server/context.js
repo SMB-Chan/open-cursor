@@ -7,6 +7,7 @@ const DEFAULT_CONTEXT_MAX_FILES = 300;
 const DEFAULT_CONTEXT_MAX_BYTES = 128 * 1024;
 const DEFAULT_CONTEXT_FILE_BYTES = 12 * 1024;
 const DEFAULT_DIFF_MAX_BYTES = 96 * 1024;
+const MAX_REVIEW_PATHS = 250;
 
 const IGNORED_DIRECTORIES = new Set([
   ".git",
@@ -109,7 +110,7 @@ function contextLimits(overrides = {}) {
 }
 
 function isSecretPath(relativePath) {
-  return relativePath
+  return String(relativePath || "")
     .split(/[\\/]/)
     .some((part) => SECRET_PATTERNS.some((pattern) => pattern.test(part)));
 }
@@ -321,6 +322,55 @@ async function getGitHead(root) {
   return /^[0-9a-f]{40,64}$/i.test(head) ? head : null;
 }
 
+function parseNameOnly(output) {
+  return output
+    .split("\0")
+    .map((path) => path.trim())
+    .filter(Boolean);
+}
+
+async function changedPaths(root, baseRef) {
+  const commands = baseRef
+    ? [["diff", "--name-only", "-z", baseRef, "--"]]
+    : [
+        ["diff", "--name-only", "-z", "--"],
+        ["diff", "--cached", "--name-only", "-z", "--"],
+      ];
+
+  const paths = new Set();
+  let truncated = false;
+  for (const args of commands) {
+    const result = await captureCommand("git", args, {
+      cwd: root,
+      maxBytes: 64 * 1024,
+    });
+    truncated ||= result.truncated;
+    for (const path of parseNameOnly(result.stdout)) {
+      if (!isSecretPath(path)) paths.add(path);
+    }
+  }
+
+  const files = [...paths].sort();
+  if (files.length > MAX_REVIEW_PATHS) truncated = true;
+  return { files: files.slice(0, MAX_REVIEW_PATHS), truncated };
+}
+
+function sanitizedStatus(statusText) {
+  let omitted = false;
+  const lines = statusText.split(/\r?\n/).filter(Boolean);
+  const kept = lines.filter((line) => {
+    const rawPath = line.length > 3 ? line.slice(3) : line;
+    const paths = rawPath.split(" -> ").map((path) => path.replace(/^"|"$/g, ""));
+    if (paths.some(isSecretPath)) {
+      omitted = true;
+      return false;
+    }
+    return true;
+  });
+  if (omitted) kept.push("!! [secret-like changed paths omitted from agent context]");
+  return kept.join("\n");
+}
+
 async function buildGitReviewContext(root, options = {}) {
   const maxBytes = boundedInteger(
     options.maxBytes ?? process.env.BRIDGE_DIFF_MAX_BYTES,
@@ -335,44 +385,49 @@ async function buildGitReviewContext(root, options = {}) {
     cwd: root,
     maxBytes: statusBudget,
   });
+  const paths = await changedPaths(root, options.baseRef);
 
-  let diff;
-  if (options.baseRef) {
-    diff = await captureCommand(
-      "git",
-      ["diff", options.baseRef, "--no-ext-diff", "--unified=3", "--"],
-      { cwd: root, maxBytes: diffBudget }
-    );
-  } else {
-    const unstagedBudget = Math.floor(diffBudget / 2);
-    const unstaged = await captureCommand(
-      "git",
-      ["diff", "--no-ext-diff", "--unified=3", "--"],
-      { cwd: root, maxBytes: unstagedBudget }
-    );
-    const staged = await captureCommand(
-      "git",
-      ["diff", "--cached", "--no-ext-diff", "--unified=3", "--"],
-      { cwd: root, maxBytes: diffBudget - unstagedBudget }
-    );
-    diff = {
-      stdout: [unstaged.stdout, staged.stdout].filter(Boolean).join("\n"),
-      truncated: unstaged.truncated || staged.truncated,
-    };
+  let diff = { stdout: "", truncated: paths.truncated };
+  if (paths.files.length > 0) {
+    if (options.baseRef) {
+      diff = await captureCommand(
+        "git",
+        ["diff", options.baseRef, "--no-ext-diff", "--unified=3", "--", ...paths.files],
+        { cwd: root, maxBytes: diffBudget }
+      );
+      diff.truncated ||= paths.truncated;
+    } else {
+      const unstagedBudget = Math.floor(diffBudget / 2);
+      const unstaged = await captureCommand(
+        "git",
+        ["diff", "--no-ext-diff", "--unified=3", "--", ...paths.files],
+        { cwd: root, maxBytes: unstagedBudget }
+      );
+      const staged = await captureCommand(
+        "git",
+        ["diff", "--cached", "--no-ext-diff", "--unified=3", "--", ...paths.files],
+        { cwd: root, maxBytes: diffBudget - unstagedBudget }
+      );
+      diff = {
+        stdout: [unstaged.stdout, staged.stdout].filter(Boolean).join("\n"),
+        truncated: paths.truncated || unstaged.truncated || staged.truncated,
+      };
+    }
   }
 
   const sections = [];
-  if (status.stdout.trim()) sections.push(`# Git status\n${status.stdout.trim()}`);
+  const safeStatus = sanitizedStatus(status.stdout);
+  if (safeStatus.trim()) sections.push(`# Git status\n${safeStatus.trim()}`);
   if (diff.stdout.trim()) {
     sections.push(
       `# Changes${options.baseRef ? ` since ${options.baseRef.slice(0, 12)}` : ""}\n${diff.stdout.trim()}`
     );
   }
   if (diff.truncated) {
-    sections.push("# Note\nGit diff was truncated to the configured review budget.");
+    sections.push("# Note\nGit change context was truncated to the configured review budget.");
   }
 
-  return sections.join("\n\n") || "# Git review context\nNo Git changes were detected.";
+  return sections.join("\n\n") || "# Git review context\nNo non-secret Git changes were detected.";
 }
 
 async function withIsolatedDirectory(callback) {
