@@ -4,104 +4,222 @@
   "title": "Open-Cursor runtime configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["bridge", "execution", "context", "collaboration", "agents", "routing", "protection"],
+  "required": [
+    "bridge",
+    "execution",
+    "context",
+    "collaboration",
+    "agents",
+    "routing",
+    "protection"
+  ],
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "bridge": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["port", "host", "allowRemote"],
+      "required": [
+        "port",
+        "host",
+        "allowRemote"
+      ],
       "properties": {
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "host": { "type": "string", "minLength": 1 },
-        "allowRemote": { "type": "boolean" }
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowRemote": {
+          "type": "boolean"
+        }
       }
     },
     "execution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agentTimeoutMs", "killGraceMs", "maxBodyBytes", "maxOutputBytes"],
+      "required": [
+        "agentTimeoutMs",
+        "killGraceMs",
+        "maxBodyBytes",
+        "maxOutputBytes"
+      ],
       "properties": {
-        "agentTimeoutMs": { "type": "integer", "minimum": 1000 },
-        "killGraceMs": { "type": "integer", "minimum": 100 },
-        "maxBodyBytes": { "type": "integer", "minimum": 1024 },
-        "maxOutputBytes": { "type": "integer", "minimum": 1024 }
+        "agentTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000
+        },
+        "killGraceMs": {
+          "type": "integer",
+          "minimum": 100
+        },
+        "maxBodyBytes": {
+          "type": "integer",
+          "minimum": 1024
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "minimum": 1024
+        }
       }
     },
     "context": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxFiles", "maxBytes", "maxFileBytes", "diffMaxBytes", "omitSecretLikePaths"],
+      "required": [
+        "maxFiles",
+        "maxBytes",
+        "maxFileBytes",
+        "diffMaxBytes",
+        "omitSecretLikePaths"
+      ],
       "properties": {
-        "maxFiles": { "type": "integer", "minimum": 10, "maximum": 5000 },
-        "maxBytes": { "type": "integer", "minimum": 4096, "maximum": 2097152 },
-        "maxFileBytes": { "type": "integer", "minimum": 1024, "maximum": 262144 },
-        "diffMaxBytes": { "type": "integer", "minimum": 4096, "maximum": 2097152 },
-        "omitSecretLikePaths": { "const": true }
+        "maxFiles": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 5000
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 2097152
+        },
+        "maxFileBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 262144
+        },
+        "diffMaxBytes": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 2097152
+        },
+        "omitSecretLikePaths": {
+          "const": true
+        }
       }
     },
     "collaboration": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["pipeline", "collaborative", "reviewerWorkingDirectory", "workspaceWriter"],
+      "required": [
+        "pipeline",
+        "collaborative",
+        "reviewerWorkingDirectory",
+        "workspaceWriter"
+      ],
       "properties": {
         "pipeline": {
           "type": "array",
-          "prefixItems": [{ "const": "plan" }, { "const": "implement" }],
+          "prefixItems": [
+            {
+              "const": "plan"
+            },
+            {
+              "const": "implement"
+            }
+          ],
           "minItems": 2,
           "maxItems": 2
         },
         "collaborative": {
           "type": "array",
           "prefixItems": [
-            { "const": "plan" },
-            { "const": "implement" },
-            { "const": "review" },
-            { "const": "refine" }
+            {
+              "const": "plan"
+            },
+            {
+              "const": "implement"
+            },
+            {
+              "const": "review"
+            },
+            {
+              "const": "refine"
+            }
           ],
           "minItems": 4,
           "maxItems": 4
         },
-        "reviewerWorkingDirectory": { "const": "detached-temporary" },
-        "workspaceWriter": { "const": "codex" }
+        "reviewerWorkingDirectory": {
+          "const": "detached-temporary"
+        },
+        "workspaceWriter": {
+          "const": "codex"
+        }
       }
     },
     "agents": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["codex", "antigravity"],
+      "required": [
+        "codex",
+        "antigravity",
+        "mimo"
+      ],
       "properties": {
-        "codex": { "$ref": "#/$defs/agent" },
+        "codex": {
+          "$ref": "#/$defs/agent"
+        },
         "antigravity": {
           "allOf": [
-            { "$ref": "#/$defs/agent" },
+            {
+              "$ref": "#/$defs/agent"
+            },
             {
               "type": "object",
               "properties": {
-                "useG1Credits": { "type": "boolean" }
+                "useG1Credits": {
+                  "type": "boolean"
+                }
               }
             }
           ]
+        },
+        "mimo": {
+          "$ref": "#/$defs/remoteAgent"
         }
       }
     },
     "routing": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["default", "rules", "languages"],
+      "required": [
+        "default",
+        "rules",
+        "languages"
+      ],
       "properties": {
         "default": {
-          "enum": ["collaborative", "pipeline", "codex", "antigravity"]
+          "enum": [
+            "collaborative",
+            "pipeline",
+            "codex",
+            "antigravity"
+          ]
         },
         "rules": {
           "type": "object",
           "additionalProperties": {
-            "enum": ["collaborative", "pipeline", "codex", "antigravity"]
+            "enum": [
+              "collaborative",
+              "pipeline",
+              "codex",
+              "antigravity"
+            ]
           }
         },
         "languages": {
           "type": "array",
-          "items": { "type": "string", "minLength": 2 },
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
           "uniqueItems": true
         }
       }
@@ -109,30 +227,116 @@
     "protection": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["bridgeDir", "codexDir", "geminiDir", "loopbackOnlyByDefault", "browserOriginExecutionDenied", "concurrentWorkspaceWriters"],
+      "required": [
+        "bridgeDir",
+        "codexDir",
+        "geminiDir",
+        "loopbackOnlyByDefault",
+        "browserOriginExecutionDenied",
+        "concurrentWorkspaceWriters"
+      ],
       "properties": {
-        "note": { "type": "string" },
-        "bridgeDir": { "type": "string" },
-        "codexDir": { "type": "string" },
-        "geminiDir": { "type": "string" },
-        "loopbackOnlyByDefault": { "const": true },
-        "browserOriginExecutionDenied": { "const": true },
-        "concurrentWorkspaceWriters": { "const": false }
+        "note": {
+          "type": "string"
+        },
+        "bridgeDir": {
+          "type": "string"
+        },
+        "codexDir": {
+          "type": "string"
+        },
+        "geminiDir": {
+          "type": "string"
+        },
+        "loopbackOnlyByDefault": {
+          "const": true
+        },
+        "browserOriginExecutionDenied": {
+          "const": true
+        },
+        "concurrentWorkspaceWriters": {
+          "const": false
+        }
       }
     }
   },
   "$defs": {
     "agent": {
       "type": "object",
-      "required": ["enabled", "binary", "authMode", "billing", "strengths"],
+      "required": [
+        "enabled",
+        "binary",
+        "authMode",
+        "billing",
+        "strengths"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "binary": { "type": "string", "minLength": 1 },
-        "authMode": { "type": "string", "minLength": 1 },
-        "billing": { "type": "string", "minLength": 1 },
+        "enabled": {
+          "type": "boolean"
+        },
+        "binary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authMode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "billing": {
+          "type": "string",
+          "minLength": 1
+        },
         "strengths": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "remoteAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "authMode",
+        "billing",
+        "endpoint",
+        "model",
+        "workspaceAccess",
+        "strengths"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "authMode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "billing": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspaceAccess": {
+          "const": "none"
+        },
+        "strengths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "uniqueItems": true
         }
       }

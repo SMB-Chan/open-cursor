@@ -134,6 +134,24 @@ function validateRawConfig(raw) {
     }
   }
 
+  const mimo = raw.agents?.mimo;
+  if (!mimo || typeof mimo !== "object") {
+    throw new RuntimeConfigError("agents.mimo is required");
+  }
+  if (typeof mimo.enabled !== "boolean") {
+    throw new RuntimeConfigError("agents.mimo.enabled must be boolean");
+  }
+  nonEmptyString(mimo.authMode, "agents.mimo.authMode");
+  nonEmptyString(mimo.billing, "agents.mimo.billing");
+  nonEmptyString(mimo.endpoint, "agents.mimo.endpoint");
+  nonEmptyString(mimo.model, "agents.mimo.model");
+  if (mimo.workspaceAccess !== "none") {
+    throw new RuntimeConfigError("agents.mimo.workspaceAccess must remain none");
+  }
+  if (!Array.isArray(mimo.strengths) || mimo.strengths.some((item) => typeof item !== "string")) {
+    throw new RuntimeConfigError("agents.mimo.strengths must be an array of strings");
+  }
+
   const routing = raw.routing || {};
   if (!["collaborative", "pipeline", "codex", "antigravity"].includes(routing.default)) {
     throw new RuntimeConfigError("routing.default is invalid");
@@ -232,6 +250,14 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
     home
   );
 
+  const mimo = {
+    ...raw.agents.mimo,
+    enabled: envBoolean(env, "MIMO_ENABLED", raw.agents.mimo.enabled, overrides),
+    endpoint: envString(env, "MIMO_ENDPOINT", raw.agents.mimo.endpoint, overrides),
+    model: envString(env, "MIMO_MODEL", raw.agents.mimo.model, overrides),
+    workspaceAccess: "none",
+  };
+
   return Object.freeze({
     source,
     overrides: Object.freeze([...new Set(overrides)]),
@@ -247,6 +273,7 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
     agents: Object.freeze({
       codex: Object.freeze({ ...raw.agents.codex, binary: codexBinary }),
       antigravity: Object.freeze({ ...raw.agents.antigravity, binary: antigravityBinary }),
+      mimo: Object.freeze(mimo),
     }),
     routing: Object.freeze({
       default: raw.routing.default,
@@ -271,6 +298,11 @@ function applyRuntimeDefaultsToEnv(config, env = process.env) {
     BRIDGE_DIFF_MAX_BYTES: config.context.diffMaxBytes,
     CODEX_BIN: config.agents.codex.binary,
     AGY_BIN: config.agents.antigravity.binary,
+    CODEX_ENABLED: config.agents.codex.enabled ? "1" : "0",
+    AGY_ENABLED: config.agents.antigravity.enabled ? "1" : "0",
+    MIMO_ENABLED: config.agents.mimo.enabled ? "1" : "0",
+    MIMO_ENDPOINT: config.agents.mimo.endpoint,
+    MIMO_MODEL: config.agents.mimo.model,
   };
 
   for (const [name, value] of Object.entries(defaults)) {

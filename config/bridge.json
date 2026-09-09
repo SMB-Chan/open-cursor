@@ -19,8 +19,16 @@
     "omitSecretLikePaths": true
   },
   "collaboration": {
-    "pipeline": ["plan", "implement"],
-    "collaborative": ["plan", "implement", "review", "refine"],
+    "pipeline": [
+      "plan",
+      "implement"
+    ],
+    "collaborative": [
+      "plan",
+      "implement",
+      "review",
+      "refine"
+    ],
     "reviewerWorkingDirectory": "detached-temporary",
     "workspaceWriter": "codex"
   },
@@ -30,7 +38,12 @@
       "binary": "codex",
       "authMode": "chatgpt",
       "billing": "NONE",
-      "strengths": ["code-generation", "refactoring", "debugging", "git-operations"]
+      "strengths": [
+        "code-generation",
+        "refactoring",
+        "debugging",
+        "git-operations"
+      ]
     },
     "antigravity": {
       "enabled": true,
@@ -38,7 +51,27 @@
       "authMode": "google-oauth",
       "billing": "NONE",
       "useG1Credits": false,
-      "strengths": ["analysis", "architecture", "research", "multimodal", "web-search"]
+      "strengths": [
+        "analysis",
+        "architecture",
+        "research",
+        "multimodal",
+        "web-search"
+      ]
+    },
+    "mimo": {
+      "enabled": true,
+      "authMode": "api-key",
+      "billing": "external-token-plan",
+      "endpoint": "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions",
+      "model": "mimo-v2.5-pro",
+      "workspaceAccess": "none",
+      "strengths": [
+        "solution-drafting",
+        "fast-inference",
+        "multilingual",
+        "read-only"
+      ]
     }
   },
   "routing": {
@@ -48,7 +81,10 @@
       "implementation": "codex",
       "complex-multi-step": "collaborative"
     },
-    "languages": ["en", "ja"]
+    "languages": [
+      "en",
+      "ja"
+    ]
   },
   "protection": {
     "note": "All paths are outside Cursor's managed application directories",

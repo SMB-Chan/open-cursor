@@ -56,6 +56,7 @@ const AGENTS = {
   codex: {
     name: "Codex (OpenAI/ChatGPT)",
     authCheck: async () => {
+      if (["0", "false"].includes(String(process.env.CODEX_ENABLED || "1").toLowerCase())) return false;
       try {
         await readFile(join(CODEX_HOME, "auth.json"), "utf-8");
         return true;
@@ -68,6 +69,7 @@ const AGENTS = {
   antigravity: {
     name: "Antigravity (Gemini AI Pro)",
     authCheck: async () => {
+      if (["0", "false"].includes(String(process.env.AGY_ENABLED || "1").toLowerCase())) return false;
       try {
         const settings = await readFile(
           join(GEMINI_HOME, "antigravity-cli/settings.json"),
@@ -83,10 +85,11 @@ const AGENTS = {
   mimo: {
     name: "Xiaomi MiMo (mimo-v2.5-pro)",
     authCheck: async () => {
+      if (["0", "false"].includes(String(process.env.MIMO_ENABLED || "1").toLowerCase())) return false;
       const key = await getMiMoApiKey();
       return Boolean(key);
     },
-    strengths: ["code-generation", "fast-inference", "multilingual"],
+    strengths: ["solution-drafting", "fast-inference", "multilingual", "read-only"],
   },
 };
 
@@ -335,13 +338,13 @@ async function getMiMoApiKey() {
   return "";
 }
 
-async function runMiMo(prompt, { model = "mimo-v2.5-pro", signal, onChunk } = {}) {
+async function runMiMo(prompt, { model = process.env.MIMO_MODEL || "mimo-v2.5-pro", signal, onChunk } = {}) {
   const apiKey = await getMiMoApiKey();
   if (!apiKey) {
     throw new HttpError(502, "MiMo API key not found in environment or continue/.env");
   }
 
-  const endpoint = "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions";
+  const endpoint = process.env.MIMO_ENDPOINT || "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions";
   const payload = {
     model: model || "mimo-v2.5-pro",
     max_tokens: 8192,
@@ -538,12 +541,13 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
   const taskType = analyzeTask(prompt);
   let selectedMode = isAuto ? taskType.routing : mode;
 
-  if (isAuto && (await AGENTS.mimo.authCheck())) {
-    if (selectedMode === "collaborative") {
-      selectedMode = "mimo-gemini";
-    } else if (selectedMode === "codex") {
-      selectedMode = "mimo";
-    }
+  if (isAuto) {
+    const availability = {
+      codex: await AGENTS.codex.authCheck(),
+      antigravity: await AGENTS.antigravity.authCheck(),
+      mimo: await AGENTS.mimo.authCheck(),
+    };
+    selectedMode = selectAutoMode(taskType, availability);
   }
 
   if (isAuto) {
@@ -557,35 +561,17 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
   switch (selectedMode) {
     case "codex": {
-      try {
-        const result = await runCodex(prompt, {
-          cwd,
-          model,
-          signal,
-          onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "response" }),
-        });
-        return requireSuccessfulAgent(result);
-      } catch (error) {
-        if (isAuto && (await AGENTS.mimo.authCheck())) {
-          emitHeader(
-            onEvent,
-            `\n\n> ⚠️ [Codex利用不可のため、Xiaomi MiMoへ自動切り替えしました]\n\n`,
-            "mimo",
-            "fallback"
-          );
-          const fallbackResult = await runMiMo(prompt, {
-            model: "mimo-v2.5-pro",
-            signal,
-            onChunk: (text) => onEvent?.({ text, agent: "mimo", phase: "response" }),
-          });
-          return requireSuccessfulAgent(fallbackResult);
-        }
-        throw error;
-      }
+      const result = await runCodex(prompt, {
+        cwd,
+        model,
+        signal,
+        onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "response" }),
+      });
+      return requireSuccessfulAgent(result);
     }
 
     case "antigravity": {
-      if (!mode) {
+      if (isAuto) {
         const context = await buildWorkspaceContext(cwd, { hint: prompt });
         const result = await runAntigravityDetached(
           `${untrustedContextPreamble()}\n\n# Task\n${prompt}\n\n${context.text}`,
@@ -746,15 +732,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           code: refinement.code,
         };
       } catch (err) {
-        if (await AGENTS.mimo.authCheck()) {
-          emitHeader(
-            onEvent,
-            `\n\n> ⚠️ [Codex利用不可のため、MiMo + Gemini 協調モードへ自動切り替えしました]\n\n`,
-            "mimo-gemini",
-            "fallback"
-          );
-          return orchestrate(prompt, { cwd, mode: "mimo-gemini", model, signal, onEvent });
-        }
+        // Never retry a workspace-writing workflow through a response-only agent.
+        // Codex may already have changed files before a later stage failed.
         throw err;
       }
     }
@@ -788,15 +767,16 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
       emitHeader(
         onEvent,
-        "\n\n---\n\n## 💻 MiMo 実装・回答 (Implementation)\n\n",
+        "\n\n---\n\n## 💻 MiMo 解決案 (Read-only Solution Draft)\n\n",
         "mimo",
         "implementation-header"
       );
       const mimoPrompt = [
         "You are an expert software engineer collaborating with Gemini in Open-Cursor.",
         "Gemini has analyzed the project and created the architectural plan below.",
-        "Please provide the complete implementation, code, or answer addressing the user's task, following Gemini's plan.",
-        "Write clean, production-ready code with clear explanations.",
+        "Provide a complete read-only solution draft, code proposal, or answer addressing the user's task, following Gemini's plan.",
+        "Do not claim that workspace files were changed or commands were executed.",
+        "Write clean, production-ready code proposals with clear explanations.",
         "",
         "# Original Task",
         prompt,
@@ -825,7 +805,7 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
       );
       const reviewPrompt = [
         untrustedContextPreamble(),
-        "Review MiMo's implementation and response for correctness, edge cases, potential bugs, security, and whether the user's task is fully satisfied.",
+        "Review MiMo's read-only solution draft and response for correctness, edge cases, potential bugs, security, and whether the user's task is fully satisfied.",
         "Provide a concise, constructive assessment and any recommended improvements.",
         "",
         "# Original Task",
@@ -834,7 +814,7 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         "# Architectural Plan",
         clipText(plan.content, 32 * 1024),
         "",
-        "# MiMo Implementation",
+        "# MiMo Solution Draft",
         clipText(implementation.content, 48 * 1024),
       ].join("\n");
 
@@ -850,7 +830,7 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
       return {
         content: [
           `## 📋 Gemini 計画・分析 (Planning)\n\n${clipText(plan.content, 64 * 1024)}`,
-          `## 💻 MiMo 実装・回答 (Implementation)\n\n${clipText(implementation.content, 64 * 1024)}`,
+          `## 💻 MiMo 解決案 (Read-only Solution Draft)\n\n${clipText(implementation.content, 64 * 1024)}`,
           `## 🔍 Gemini 検証・レビュー (Review & Verification)\n\n${clipText(review.content, 64 * 1024)}`,
         ].join("\n\n---\n\n"),
         agent: "mimo-gemini",
@@ -872,30 +852,50 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
 function analyzeTask(prompt) {
   const p = prompt.toLowerCase();
-
-  if (
-    /\b(analyze|research|explain|review|audit|compare|survey|study|evaluate|investigate)\b/.test(p) ||
-    /(分析|調査|説明|レビュー|監査|比較|検証|研究|評価|考察)/.test(prompt)
-  ) {
-    return { routing: "antigravity", reason: "analysis task" };
-  }
-
-  if (
-    /\b(implement|create|build|write|fix|debug|refactor|deploy|patch|add)\b/.test(p) ||
-    /(実装|作成|構築|修正|デバッグ|リファクタ|デプロイ|追加|直して|作って)/.test(prompt)
-  ) {
-    return { routing: "codex", reason: "implementation task" };
-  }
-
-  if (
+  const hasAnalysis =
+    /\b(analyze|research|explain|review|audit|compare|survey|study|evaluate|investigate|inspect|verify)\b/.test(p) ||
+    /(分析|調査|説明|レビュー|監査|比較|検証|研究|評価|考察|確認)/.test(prompt);
+  const hasImplementation =
+    /\b(implement|create|build|write|fix|debug|refactor|deploy|patch|add|edit|update|delete|remove|rename|migrate|upgrade|install|configure|merge)\b/.test(p) ||
+    /(実装|作成|構築|修正|デバッグ|リファクタ|デプロイ|追加|直して|作って|編集|更新|削除|変更|移行|改善|導入|設定|統合)/.test(prompt);
+  const hasContinuation =
     prompt.length > 500 ||
-    /\b(and then|after that|also|additionally|furthermore|continue)\b/.test(p) ||
-    /(その後|さらに|加えて|続けて|続行)/.test(prompt)
-  ) {
-    return { routing: "collaborative", reason: "complex multi-step task" };
+    /\b(and then|after that|also|additionally|furthermore|continue|proceed|carry on)\b/.test(p) ||
+    /(その後|さらに|加えて|続けて|続行|続けよ|進めて)/.test(prompt);
+
+  if (hasImplementation && (hasAnalysis || hasContinuation)) {
+    return {
+      routing: "collaborative",
+      reason: "implementation + verification/continuation task",
+      kind: "complex-write",
+      requiresWorkspaceWrite: true,
+    };
+  }
+  if (hasImplementation) {
+    return { routing: "codex", reason: "implementation task", kind: "write", requiresWorkspaceWrite: true };
+  }
+  if (hasAnalysis) {
+    return { routing: "antigravity", reason: "analysis task", kind: "analysis", requiresWorkspaceWrite: false };
+  }
+  if (hasContinuation) {
+    return { routing: "collaborative", reason: "complex multi-step task", kind: "complex-write", requiresWorkspaceWrite: true };
+  }
+  return { routing: "antigravity", reason: "general read-only task", kind: "general", requiresWorkspaceWrite: false };
+}
+
+function selectAutoMode(taskType, availability) {
+  const { codex = false, antigravity = false, mimo = false } = availability || {};
+
+  if (taskType.requiresWorkspaceWrite) {
+    if (taskType.routing === "collaborative" && codex && antigravity) return "collaborative";
+    if (codex) return "codex";
+    throw new HttpError(503, "Auto routing requires a workspace-writing Codex agent for this task");
   }
 
-  return { routing: "collaborative", reason: "general task" };
+  if (antigravity) return "antigravity";
+  if (mimo) return "mimo";
+  if (codex) return "codex";
+  throw new HttpError(503, "No available agent can safely handle this read-only task");
 }
 
 function stopActiveProcesses() {
@@ -927,5 +927,6 @@ export {
   orchestrate,
   runMiMo,
   runProcess,
+  selectAutoMode,
   stopActiveProcesses,
 };
