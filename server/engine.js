@@ -12,6 +12,7 @@ import {
   withIsolatedDirectory,
 } from "./context.js";
 import { compressHandoff, safePromptArg } from "./compressor.js";
+import { updateExecutionState } from "./monitor.js";
 
 const VERSION = "2.3.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
@@ -701,6 +702,15 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         const { workspaceContext, baselineHead, initialGitState } =
           await buildCollaborationInputs(cwd, prompt);
 
+        updateExecutionState({
+          active: true,
+          mode: "collaborative",
+          phase: "plan",
+          agent: "antigravity",
+          progress: 25,
+          currentAction: "計画・設計フェーズ (Gemini Pro)",
+        });
+
         emitHeader(
           onEvent,
           "> 📊 **【進捗 1/4】** `[▰▰▱▱▱▱▱▱] 25%` ── **計画・設計フェーズ (Gemini Pro)**\n" +
@@ -719,6 +729,15 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         );
 
         const compressedPlan = compressHandoff(plan.content, { phase: "plan" });
+
+        updateExecutionState({
+          active: true,
+          mode: "collaborative",
+          phase: "implementation",
+          agent: "codex",
+          progress: 50,
+          currentAction: "自律実装フェーズ (OpenAI Codex)",
+        });
 
         emitHeader(
           onEvent,
@@ -747,6 +766,15 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
             maxFileBytes: 8 * 1024,
           }),
         ]);
+
+        updateExecutionState({
+          active: true,
+          mode: "collaborative",
+          phase: "review",
+          agent: "antigravity",
+          progress: 75,
+          currentAction: "独立検査フェーズ (Gemini Pro)",
+        });
 
         emitHeader(
           onEvent,
@@ -777,6 +805,15 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
         const compressedReview = compressHandoff(review.content, { phase: "review" });
 
+        updateExecutionState({
+          active: true,
+          mode: "collaborative",
+          phase: "refinement",
+          agent: "codex",
+          progress: 95,
+          currentAction: "修正・仕上げフェーズ (OpenAI Codex)",
+        });
+
         emitHeader(
           onEvent,
           "\n\n> ✨ **【進捗 4/4】** `[▰▰▰▰▰▰▰▰] 100%` ── **修正・仕上げフェーズ (OpenAI Codex)**\n" +
@@ -793,6 +830,12 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
               onEvent?.({ text, agent: "codex", phase: "refinement" }),
           })
         );
+
+        updateExecutionState({
+          active: false,
+          progress: 100,
+          currentAction: "協調コーディング完了",
+        });
 
         return {
           content: formatCollaborativeResult({

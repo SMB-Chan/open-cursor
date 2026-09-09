@@ -131,8 +131,10 @@
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
         .search-box label { font-size: 18px; font-weight: bold; display: block; margin-bottom: 10px; }
-        .search-box input[type="time"] { font-size: 24px; padding: 10px; width: 80%; max-width: 200px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 4px; text-align: center; }
-        .search-box button { font-size: 20px; padding: 15px; width: 100%; max-width: 300px; background-color: #34495e; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .search-box .input-group { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+        .search-box input[type="time"] { font-size: 24px; padding: 10px; max-width: 160px; border: 1px solid #ccc; border-radius: 4px; text-align: center; }
+        .search-box button { font-size: 18px; padding: 15px 20px; background-color: #34495e; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .search-box .btn-now { background-color: #27ae60; width: 100%; max-width: 300px; margin-top: 10px; }
         .resultBox { margin-top: 20px; font-size: 20px; font-weight: bold; min-height: 2em; line-height: 1.4; }
     </style>
 </head>
@@ -148,9 +150,13 @@
     <!-- 行き（OUTWARD） -->
     <div id="outward" class="tab-content active">
         <div class="search-box">
-            <label for="timeInputOutward">西阿知駅の出発予定時刻:</label>
-            <input type="time" id="timeInputOutward">
-            <button onclick="findNextRideOutward()">どちらに乗るべきか検索</button>
+            <label for="timeInputOutward">到着希望時刻 (西富井/穴場神社前):</label>
+            <div class="input-group">
+                <input type="time" id="timeInputOutward">
+                <button onclick="findRideBackwardOutward()">逆算検索</button>
+            </div>
+            <hr style="margin: 15px 0; border: none; border-top: 1px solid #eee;">
+            <button class="btn-now" onclick="findNextRideOutwardNow()">現在時刻+20分で出発検索</button>
             <div id="resultBoxOutward" class="resultBox"></div>
         </div>
 
@@ -225,9 +231,13 @@
     <!-- 帰り（RETURN） -->
     <div id="return" class="tab-content">
         <div class="search-box">
-            <label for="timeInputReturn">出発予定時刻 (西富井/穴場神社前):</label>
-            <input type="time" id="timeInputReturn">
-            <button onclick="findNextRideReturn()">どちらに乗るべきか検索</button>
+            <label for="timeInputReturn">到着希望時刻 (西阿知):</label>
+            <div class="input-group">
+                <input type="time" id="timeInputReturn">
+                <button onclick="findRideBackwardReturn()">逆算検索</button>
+            </div>
+            <hr style="margin: 15px 0; border: none; border-top: 1px solid #eee;">
+            <button class="btn-now" onclick="findNextRideReturnNow()">現在時刻+20分で出発検索</button>
             <div id="resultBoxReturn" class="resultBox"></div>
         </div>
 
@@ -351,6 +361,29 @@
             return null;
         }
 
+        function getPrevRide(tableId, targetArrMinutes) {
+            const rows = document.querySelectorAll('#' + tableId + ' tbody tr');
+            let bestRide = null;
+            for (let row of rows) {
+                const depTimeStr = row.cells[0].innerText.trim();
+                const arrTimeStr = row.cells[1].innerText.trim();
+                const arrTimeMins = parseTime(arrTimeStr);
+                
+                if (arrTimeMins <= targetArrMinutes) {
+                    bestRide = {
+                        departure: depTimeStr,
+                        departureMins: parseTime(depTimeStr),
+                        arrival: arrTimeStr,
+                        arrivalMins: arrTimeMins,
+                        element: row
+                    };
+                } else {
+                    break;
+                }
+            }
+            return bestRide;
+        }
+
         function formatTime() {
             const now = new Date();
             now.setMinutes(now.getMinutes() + 20);
@@ -374,12 +407,22 @@
             document.querySelectorAll(`#${tabId} tr`).forEach(tr => tr.style.backgroundColor = '');
         }
 
-        function findNextRideOutward() {
-            resetHighlights('outward');
+        function findNextRideOutwardNow() {
+            const now = new Date();
+            now.setMinutes(now.getMinutes() + 20);
+            const inputTimeMinutes = now.getHours() * 60 + now.getMinutes();
+            doForwardSearchOutward(inputTimeMinutes);
+        }
+
+        function findRideBackwardOutward() {
             const timeInput = document.getElementById('timeInputOutward').value;
             if (!timeInput) { alert('時刻を入力してください'); return; }
             const inputTimeMinutes = parseTime(timeInput);
-            
+            doBackwardSearchOutward(inputTimeMinutes);
+        }
+
+        function doForwardSearchOutward(inputTimeMinutes) {
+            resetHighlights('outward');
             const nextJR = getNextRide('jr-table-outward', inputTimeMinutes);
             const resultBox = document.getElementById('resultBoxOutward');
 
@@ -416,7 +459,7 @@
             const best = options[0];
             const tied = options.filter(opt => opt.data.arrivalMins === best.data.arrivalMins && opt.data.departureMins === best.data.departureMins);
 
-            let recommendation = `行き: 西阿知 ${nextJR.departure}発 → 倉敷 ${nextJR.arrival}着<br>`;
+            let recommendation = `行き (出発基準): 西阿知 ${nextJR.departure}発 → 倉敷 ${nextJR.arrival}着<br>`;
             if (tied.length === 1) {
                 recommendation += `おすすめ: <span style="color: ${best.color};">${best.name}</span> (${best.route})`;
                 best.data.element.style.backgroundColor = best.bgColor;
@@ -429,12 +472,75 @@
             resultBox.innerHTML = recommendation;
         }
 
-        function findNextRideReturn() {
-            resetHighlights('return');
+        function doBackwardSearchOutward(targetArrMinutes) {
+            resetHighlights('outward');
+            const resultBox = document.getElementById('resultBoxOutward');
+            const TRANSFER_TIME = 5;
+
+            const prevTrain = getPrevRide('railway-table-outward', targetArrMinutes);
+            const prevBus = getPrevRide('bus-table-outward', targetArrMinutes);
+            
+            const options = [];
+            if (prevTrain) options.push({ type: 'train', name: '水島臨海鉄道 (西富井行)', color: '#2980b9', bgColor: '#d6eaf8', data: prevTrain });
+            if (prevBus) options.push({ type: 'bus', name: '両備バス (穴場神社前行)', color: '#27ae60', bgColor: '#d5f5e3', data: prevBus });
+            
+            const validOptions = [];
+            for (let opt of options) {
+                const requiredJRArrMins = opt.data.departureMins - TRANSFER_TIME;
+                const prevJR = getPrevRide('jr-table-outward', requiredJRArrMins);
+                if (prevJR) {
+                    opt.jr = prevJR;
+                    validOptions.push(opt);
+                }
+            }
+            
+            if (validOptions.length === 0) {
+                resultBox.innerHTML = '<span style="color: red;">指定された到着時刻に間に合うルートがありません。</span>';
+                return;
+            }
+            
+            validOptions.sort((a, b) => b.jr.departureMins - a.jr.departureMins);
+            const bestDepartureMins = validOptions[0].jr.departureMins;
+            const bestOptions = validOptions.filter(opt => opt.jr.departureMins === bestDepartureMins);
+            
+            let recommendation = `出発目安: 西阿知 ${bestOptions[0].jr.departure}発 → 倉敷 ${bestOptions[0].jr.arrival}着<br>`;
+            if (bestOptions.length === 1) {
+                const best = bestOptions[0];
+                recommendation += `おすすめ: <span style="color: ${best.color};">${best.name}</span> (${best.data.departure}発 → ${best.data.arrival}着)`;
+                best.data.element.style.backgroundColor = best.bgColor;
+                scrollRowToCenter(best.data.element);
+            } else {
+                recommendation += `おすすめ: 倉敷からどちらを使っても間に合います<br>`;
+                recommendation += bestOptions.map(opt => `<span style="color: ${opt.color};">${opt.name}</span> (${opt.data.departure}発 → ${opt.data.arrival}着)`).join(' / ');
+                bestOptions.forEach(opt => {
+                    opt.data.element.style.backgroundColor = opt.bgColor;
+                    scrollRowToCenter(opt.data.element);
+                });
+            }
+            
+            const bestJR = bestOptions[0].jr;
+            bestJR.element.style.backgroundColor = '#ebdef0';
+            scrollRowToCenter(bestJR.element);
+            
+            resultBox.innerHTML = recommendation;
+        }
+
+        function findNextRideReturnNow() {
+            const now = new Date();
+            now.setMinutes(now.getMinutes() + 20);
+            const inputTimeMinutes = now.getHours() * 60 + now.getMinutes();
+            doForwardSearchReturn(inputTimeMinutes);
+        }
+
+        function findRideBackwardReturn() {
             const timeInput = document.getElementById('timeInputReturn').value;
             if (!timeInput) { alert('時刻を入力してください'); return; }
             const inputTimeMinutes = parseTime(timeInput);
-            
+            doBackwardSearchReturn(inputTimeMinutes);
+        }
+
+        function doForwardSearchReturn(inputTimeMinutes) {
+            resetHighlights('return');
             const nextTrain = getNextRide('railway-table-return', inputTimeMinutes);
             const nextBus = getNextRide('bus-table-return', inputTimeMinutes);
             const resultBox = document.getElementById('resultBoxReturn');
@@ -457,7 +563,6 @@
             let isTied = false;
             let tiedOptions = [];
 
-            // それぞれの選択肢で乗れる最速のJRを探す
             for (let opt of options) {
                 const kurashikiArrMins = opt.arrivalMins;
                 const nextJR = getNextRide('jr-table-return', kurashikiArrMins + TRANSFER_TIME);
@@ -480,19 +585,17 @@
                 return;
             }
 
-            // Highlight JR
-            const bestJR = tiedOptions[0].jr; // どちらでも乗るJRは同じ場合が多い
+            const bestJR = tiedOptions[0].jr;
             
             let recommendation = "";
             if (!isTied) {
-                recommendation += `おすすめ: <span style="color: ${bestOption.color};">${bestOption.name}</span> (${bestOption.data.departure}発 → 倉敷 ${bestOption.data.arrival}着)<br>`;
+                recommendation += `おすすめ (出発基準): <span style="color: ${bestOption.color};">${bestOption.name}</span> (${bestOption.data.departure}発 → 倉敷 ${bestOption.data.arrival}着)<br>`;
                 recommendation += `接続JR: 倉敷 ${bestOption.jr.departure}発 → 西阿知 ${bestOption.jr.arrival}着`;
                 bestOption.data.element.style.backgroundColor = bestOption.bgColor;
                 bestOption.jr.element.style.backgroundColor = '#ebdef0';
                 scrollRowToCenter(bestOption.jr.element);
             } else {
-                // どちらを使っても同じJRに間に合う場合
-                recommendation += `おすすめ: どちらを使っても同じJRに間に合います<br>`;
+                recommendation += `おすすめ (出発基準): どちらを使っても同じJRに間に合います<br>`;
                 recommendation += tiedOptions.map(opt => `<span style="color: ${opt.color};">${opt.name}</span> (${opt.data.departure}発 → ${opt.data.arrival}着)`).join(' / ') + "<br>";
                 recommendation += `接続JR: 倉敷 ${bestJR.departure}発 → 西阿知 ${bestJR.arrival}着`;
                 tiedOptions.forEach(opt => opt.data.element.style.backgroundColor = opt.bgColor);
@@ -500,6 +603,58 @@
                 scrollRowToCenter(bestJR.element);
             }
 
+            resultBox.innerHTML = recommendation;
+        }
+
+        function doBackwardSearchReturn(targetArrMinutes) {
+            resetHighlights('return');
+            const resultBox = document.getElementById('resultBoxReturn');
+            const TRANSFER_TIME = 5;
+            
+            const prevJR = getPrevRide('jr-table-return', targetArrMinutes);
+            if (!prevJR) {
+                resultBox.innerHTML = '<span style="color: red;">指定された到着時刻に間に合うJRがありません。</span>';
+                return;
+            }
+            
+            const requiredArrAtKurashiki = prevJR.departureMins - TRANSFER_TIME;
+            const prevTrain = getPrevRide('railway-table-return', requiredArrAtKurashiki);
+            const prevBus = getPrevRide('bus-table-return', requiredArrAtKurashiki);
+            
+            const options = [];
+            if (prevTrain) options.push({ type: 'train', name: '水島臨海鉄道 (西富井発)', color: '#2980b9', bgColor: '#d6eaf8', data: prevTrain });
+            if (prevBus) options.push({ type: 'bus', name: '両備バス (穴場神社前発)', color: '#27ae60', bgColor: '#d5f5e3', data: prevBus });
+            
+            if (options.length === 0) {
+                resultBox.innerHTML = `<span style="color: #8e44ad;">JR (${prevJR.departure}発→${prevJR.arrival}着)</span> には間に合いますが、接続する出発便がありません。`;
+                prevJR.element.style.backgroundColor = '#ebdef0';
+                scrollRowToCenter(prevJR.element);
+                return;
+            }
+            
+            options.sort((a, b) => b.data.departureMins - a.data.departureMins);
+            const bestDepartureMins = options[0].data.departureMins;
+            const bestOptions = options.filter(opt => opt.data.departureMins === bestDepartureMins);
+            
+            let recommendation = "";
+            if (bestOptions.length === 1) {
+                const best = bestOptions[0];
+                recommendation += `出発目安: <span style="color: ${best.color};">${best.name}</span> (${best.data.departure}発 → 倉敷 ${best.data.arrival}着)<br>`;
+                best.data.element.style.backgroundColor = best.bgColor;
+                scrollRowToCenter(best.data.element);
+            } else {
+                recommendation += `出発目安: どちらを使っても間に合います<br>`;
+                recommendation += bestOptions.map(opt => `<span style="color: ${opt.color};">${opt.name}</span> (${opt.data.departure}発 → ${opt.data.arrival}着)`).join(' / ') + "<br>";
+                bestOptions.forEach(opt => {
+                    opt.data.element.style.backgroundColor = opt.bgColor;
+                    scrollRowToCenter(opt.data.element);
+                });
+            }
+            recommendation += `接続JR: 倉敷 ${prevJR.departure}発 → 西阿知 ${prevJR.arrival}着`;
+            
+            prevJR.element.style.backgroundColor = '#ebdef0';
+            scrollRowToCenter(prevJR.element);
+            
             resultBox.innerHTML = recommendation;
         }
 

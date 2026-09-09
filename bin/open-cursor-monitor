@@ -1,0 +1,283 @@
+#!/usr/bin/env node
+"use strict";
+
+const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const { execSync } = require("node:child_process");
+
+const BRIDGE_URL = process.env.BRIDGE_URL || "http://127.0.0.1:9876";
+const STATE_FILE = path.join(os.homedir(), ".cursor-codex-bridge", "run", "execution-state.json");
+const REFRESH_INTERVAL_MS = 1500;
+
+// ANSI Colors
+const RESET = "\x1b[0m";
+const BOLD = "\x1b[1m";
+const DIM = "\x1b[2m";
+const GREEN = "\x1b[32m";
+const YELLOW = "\x1b[33m";
+const BLUE = "\x1b[34m";
+const CYAN = "\x1b[36m";
+const MAGENTA = "\x1b[35m";
+const RED = "\x1b[31m";
+const BG_BLUE = "\x1b[44m";
+const CLEAR_SCREEN = "\x1b[2J\x1b[H";
+
+function fetchMonitorData(targetWorkspace) {
+  return new Promise((resolvePromise) => {
+    const wsParam = targetWorkspace ? `?workspace=${encodeURIComponent(targetWorkspace)}` : "";
+    const req = http.get(`${BRIDGE_URL}/v1/monitor${wsParam}`, { timeout: 1200 }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return resolvePromise(null);
+      }
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(body);
+          if (parsed && parsed.llm && parsed.workspace) {
+            return resolvePromise(parsed);
+          }
+          resolvePromise(null);
+        } catch {
+          resolvePromise(null);
+        }
+      });
+    });
+    req.on("error", () => resolvePromise(null));
+    req.on("timeout", () => {
+      req.destroy();
+      resolvePromise(null);
+    });
+  });
+}
+
+function loadLocalFallback(targetWorkspace) {
+  let execution = {
+    active: false,
+    mode: "idle",
+    step: 0,
+    currentAction: "待機中 (アイドル)",
+    targetFile: null,
+    recentSteps: [],
+  };
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      execution = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    }
+  } catch {}
+
+  const ws = targetWorkspace || process.env.OPEN_CURSOR_WORKSPACE || process.cwd();
+  let modifiedFiles = [];
+  let isGitRepo = false;
+  let gitBranch = "";
+  try {
+    gitBranch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: ws, stdio: ["pipe", "pipe", "ignore"] }).toString().trim();
+    isGitRepo = true;
+    const statusOut = execSync("git status --porcelain", { cwd: ws, stdio: ["pipe", "pipe", "ignore"] }).toString();
+    if (statusOut.trim()) {
+      modifiedFiles = statusOut.split("\n").filter(l => l.trim().length > 0).map(l => ({ status: l.slice(0, 2).trim(), file: l.slice(3).trim() }));
+    }
+  } catch {
+    isGitRepo = false;
+  }
+
+  let recentFiles = [];
+  try {
+    const entries = fs.readdirSync(ws);
+    for (const name of entries) {
+      if (!name.startsWith(".")) {
+        const full = path.join(ws, name);
+        try {
+          const s = fs.statSync(full);
+          if (s.isFile()) {
+            recentFiles.push({ name, sizeBytes: s.size, mtimeMs: s.mtimeMs });
+          }
+        } catch {}
+      }
+    }
+    recentFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch {}
+
+  return {
+    timestamp: new Date().toISOString(),
+    llm: {
+      codex: {
+        name: "OpenAI Codex",
+        billing: "定額サブスク（追加課金なし）",
+        status: "READY",
+        quota: { limit: "ChatGPT利用枠準拠 (Plus/Pro定額)", resetInfo: "3時間サイクル自動回復" }
+      },
+      antigravity: {
+        name: "Google Gemini",
+        billing: "定額サブスク（追加課金なし）",
+        status: "READY",
+        quota: { limit: "Google One AI Pro (高速クォータ内)", resetInfo: "日次/時間枠自動リセット" }
+      },
+      mimo: {
+        name: "Xiaomi MiMo",
+        billing: "トークンプラン (API Key)",
+        status: "READY",
+        quota: { limit: "APIトークン残量準拠", resetInfo: "従量トークン" }
+      }
+    },
+    workspace: {
+      workspacePath: ws,
+      workspaceName: path.basename(ws),
+      isGitRepo,
+      gitBranch,
+      modifiedFiles,
+      recentFiles: recentFiles.slice(0, 8),
+    },
+    execution,
+  };
+}
+
+function renderBar(percent, width = 14) {
+  const p = Math.max(0, Math.min(100, Number(percent) || 0));
+  const filled = Math.round((p / 100) * width);
+  const empty = width - filled;
+  return `[${"▰".repeat(filled)}${"▱".repeat(empty)}] ${p}%`;
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderScreen(data) {
+  const termWidth = Math.max(70, Math.min(100, (process.stdout.columns || 80) - 2));
+  const hr = "─".repeat(termWidth);
+  const boxTop = `╔${"═".repeat(termWidth)}╗`;
+  const boxBottom = `╚${"═".repeat(termWidth)}╝`;
+  const boxMid = `╠${"═".repeat(termWidth)}╣`;
+
+  const ws = data.workspace || {};
+  const exec = data.execution || {};
+  const llm = data.llm || {};
+  const nowStr = new Date().toLocaleTimeString("ja-JP");
+
+  let out = CLEAR_SCREEN;
+
+  out += `${CYAN}${BOLD}${boxTop}${RESET}\n`;
+  out += `${CYAN}${BOLD}║  🚀 Open-Cursor Multi-Agent Live Monitor              ${DIM}${nowStr.padStart(termWidth - 42)}${RESET}${CYAN}${BOLD}  ║${RESET}\n`;
+  out += `${CYAN}${BOLD}║  📁 作業ディレクトリ: ${YELLOW}${ws.workspacePath ? (ws.workspacePath.length > termWidth - 25 ? "..." + ws.workspacePath.slice(-(termWidth - 28)) : ws.workspacePath) : "未指定"}${RESET}${CYAN}${BOLD}  ${(ws.isGitRepo ? `[Git: ${ws.gitBranch || "main"}]` : "[Non-Git]").padStart(15)}║${RESET}\n`;
+  out += `${CYAN}${BOLD}${boxMid}${RESET}\n`;
+
+  // 1. LLM Status Section
+  out += `${BOLD}  🤖 LLM 利用状況・残量ステータス (Zero-Cost / Subscription)${RESET}\n`;
+  out += `  ${GREEN}●${RESET} ${BOLD}OpenAI Codex${RESET}    : ${GREEN}READY${RESET} · ${CYAN}${llm.codex?.billing || "定額サブスク"}${RESET}\n`;
+  out += `    └─ 利用枠: ${DIM}${llm.codex?.quota?.limit || "ChatGPT利用枠"} (${llm.codex?.quota?.resetInfo || "自動回復"})${RESET}\n`;
+
+  out += `  ${GREEN}●${RESET} ${BOLD}Google Gemini${RESET}   : ${GREEN}READY${RESET} · ${CYAN}${llm.antigravity?.billing || "定額サブスク"}${RESET}\n`;
+  out += `    └─ 利用枠: ${DIM}${llm.antigravity?.quota?.limit || "Google One AI Pro"} (${llm.antigravity?.quota?.resetInfo || "自動リセット"})${RESET}\n`;
+
+  out += `  ${YELLOW}●${RESET} ${BOLD}Xiaomi MiMo${RESET}     : ${GREEN}READY${RESET} · ${YELLOW}${llm.mimo?.billing || "トークンプラン"}${RESET}\n`;
+  out += `    └─ 利用枠: ${DIM}${llm.mimo?.quota?.limit || "APIトークン"}${RESET}\n`;
+
+  out += `${CYAN}${BOLD}${boxMid}${RESET}\n`;
+
+  // 2. Active Execution & Steps Section
+  out += `${BOLD}  ⚡ 自律エージェントの現在のアクティビティ${RESET}\n`;
+  if (exec.active) {
+    const bar = renderBar(exec.progress || (10 + (exec.step || 1) * 6));
+    out += `  ${MAGENTA}${BOLD}▶ 実行中 [${exec.mode || "自律"}]${RESET}  進捗: ${CYAN}${BOLD}${bar}${RESET}\n`;
+    out += `  現在アクション: ${BOLD}${exec.currentAction || "処理中..."}${RESET}\n`;
+    if (exec.targetFile) {
+      out += `  操作ファイル  : ${YELLOW}${BOLD}📄 ${exec.targetFile}${RESET}\n`;
+    }
+  } else {
+    out += `  ${DIM}○ アイドル待機中 (直近の自律処理は完了しています)${RESET}\n`;
+    if (exec.targetFile) {
+      out += `  最終更新ファイル: ${YELLOW}${BOLD}📄 ${exec.targetFile}${RESET}\n`;
+    }
+  }
+
+  // Recent steps list
+  if (Array.isArray(exec.recentSteps) && exec.recentSteps.length > 0) {
+    out += `  ${DIM}直近の実行ステップ履歴:${RESET}\n`;
+    for (const s of exec.recentSteps.slice(0, 4)) {
+      const dur = s.duration ? `(${s.duration.toFixed(1)}s)` : "";
+      out += `   └─ ${CYAN}Step ${s.step}${RESET}: ${s.action || s.file || "処理"} ${DIM}${dur}${RESET}\n`;
+    }
+  }
+
+  out += `${CYAN}${BOLD}${boxMid}${RESET}\n`;
+
+  // 3. Workspace Edited Files Section
+  out += `${BOLD}  📝 編集中のファイル・ワークスペース変更状況${RESET}\n`;
+  const modFiles = ws.modifiedFiles || [];
+  if (modFiles.length > 0) {
+    for (const f of modFiles.slice(0, 5)) {
+      out += `  ${YELLOW}${BOLD}[${f.status || "M"}]${RESET} ${f.file}\n`;
+    }
+    if (modFiles.length > 5) {
+      out += `  ${DIM}... 他 ${modFiles.length - 5} 件の変更${RESET}\n`;
+    }
+  } else if (Array.isArray(ws.recentFiles) && ws.recentFiles.length > 0) {
+    for (const f of ws.recentFiles.slice(0, 4)) {
+      const size = formatBytes(f.sizeBytes || 0);
+      out += `  ${GREEN}📄${RESET} ${BOLD}${f.name}${RESET} ${DIM}(${size})${RESET}\n`;
+    }
+  } else {
+    out += `  ${DIM}(変更されたファイルはありません)${RESET}\n`;
+  }
+
+  out += `${CYAN}${BOLD}${boxBottom}${RESET}\n`;
+  out += ` ${DIM}[r] 更新  [b] モバイル画面開く (9880)  [q] 終了${RESET}\n`;
+
+  process.stdout.write(out);
+}
+
+const nonFlagArgs = process.argv.slice(2).filter((a) => !a.startsWith("-"));
+let activeWorkspace = nonFlagArgs[0] ? path.resolve(nonFlagArgs[0]) : (process.env.OPEN_CURSOR_WORKSPACE || process.cwd());
+
+async function loop() {
+  let data = await fetchMonitorData(activeWorkspace);
+  if (!data) {
+    data = loadLocalFallback(activeWorkspace);
+  }
+  renderScreen(data);
+  if (process.argv.includes("--once")) {
+    process.exit(0);
+  }
+}
+
+// Setup keyboard handlers
+if (process.stdin.isTTY) {
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (key) => {
+    if (key === "q" || key === "\u0003") { // q or Ctrl+C
+      process.stdout.write("\n" + RESET);
+      process.exit(0);
+    } else if (key === "r") {
+      loop();
+    } else if (key === "b") {
+      try {
+        const cmd = process.platform === "darwin" ? "open" : "xdg-open";
+        execSync(`${cmd} http://127.0.0.1:9880 2>/dev/null || true`);
+      } catch {}
+    }
+  });
+}
+
+// Initial draw and timer
+loop();
+const timer = setInterval(loop, REFRESH_INTERVAL_MS);
+
+process.on("SIGINT", () => {
+  clearInterval(timer);
+  process.stdout.write("\n" + RESET);
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  clearInterval(timer);
+  process.stdout.write("\n" + RESET);
+  process.exit(0);
+});

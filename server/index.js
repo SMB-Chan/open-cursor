@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 // environment-backed execution constants.
 import { runtimeConfig } from "./config.js";
 import { compressMessages } from "./compressor.js";
+import { getMonitorData } from "./monitor.js";
 import {
   AGENTS,
   ExecutionAbortedError,
@@ -632,6 +633,10 @@ const server = createServer(async (req, res) => {
       await handleModels(req, res);
     } else if (url.pathname === "/v1/agents" && req.method === "GET") {
       await handleAgents(req, res);
+    } else if ((url.pathname === "/monitor" || url.pathname === "/v1/monitor" || url.pathname === "/api/monitor") && req.method === "GET") {
+      const workspace = url.searchParams.get("workspace") || req.headers["x-workspace-path"];
+      const data = await getMonitorData(workspace);
+      sendJSON(res, 200, data);
     } else if (url.pathname === "/health" && req.method === "GET") {
       await handleHealth(req, res);
     } else {

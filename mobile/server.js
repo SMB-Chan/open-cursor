@@ -58,6 +58,14 @@ async function handleStatus(req, res) {
     bridgeHealth = { status: "offline", error: err.message };
   }
 
+  let monitorData = null;
+  try {
+    const monRes = await fetch(`${BRIDGE_URL}/monitor`, { signal: AbortSignal.timeout(3000) });
+    if (monRes.ok) {
+      monitorData = await monRes.json();
+    }
+  } catch {}
+
   let gitInfo = { branch: "unknown", dirty: 0, files: [] };
   try {
     const { stdout: branch } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: WORKSPACE_DIR });
@@ -73,6 +81,7 @@ async function handleStatus(req, res) {
   sendJSON(res, 200, {
     ok: true,
     bridge: bridgeHealth,
+    monitor: monitorData,
     git: gitInfo,
     localIp: getLocalIp(),
     port: PORT,
@@ -220,6 +229,14 @@ const server = createServer(async (req, res) => {
   try {
     if (url.pathname === "/api/status" && req.method === "GET") {
       await handleStatus(req, res);
+    } else if (url.pathname === "/api/monitor" && req.method === "GET") {
+      try {
+        const monRes = await fetch(`${BRIDGE_URL}/monitor`, { signal: AbortSignal.timeout(3000) });
+        const monData = await monRes.json();
+        sendJSON(res, 200, monData);
+      } catch (e) {
+        sendJSON(res, 500, { ok: false, error: e.message });
+      }
     } else if (url.pathname === "/api/git" && req.method === "GET") {
       await handleGit(req, res);
     } else if (url.pathname === "/api/exec" && req.method === "POST") {

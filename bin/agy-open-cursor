@@ -250,6 +250,41 @@ function renderStepProgressBar(stepCount) {
   return `[${"▰".repeat(filled)}${"▱".repeat(empty)}] ${percent}%`;
 }
 
+function recordAgyStep(stepCount, toolName, params, duration = null) {
+  try {
+    const stateDir = path.join(os.homedir(), ".cursor-codex-bridge", "run");
+    const stateFile = path.join(stateDir, "execution-state.json");
+    let current = {};
+    try {
+      current = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    } catch {}
+
+    const { action, detail } = formatToolSummary(toolName, params);
+    const target = params?.TargetFile || params?.AbsolutePath || current.targetFile || null;
+    current.active = true;
+    current.agent = "antigravity";
+    current.mode = current.mode || "autonomous";
+    current.step = stepCount;
+    current.progress = Math.min(95, 12 + (stepCount - 1) * 12);
+    current.currentAction = `${action}: ${detail}`;
+    if (target) current.targetFile = path.basename(target);
+    current.lastUpdatedAt = Date.now();
+
+    if (duration !== null) {
+      const newStep = {
+        step: stepCount,
+        action: `${action}: ${detail}`,
+        file: current.targetFile,
+        duration,
+        timestamp: Date.now(),
+      };
+      current.recentSteps = [newStep, ...(current.recentSteps || [])].slice(0, 15);
+    }
+    if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify(current, null, 2), "utf8");
+  } catch {}
+}
+
 function createStreamParser(onText) {
   let buffer = "";
   let streamedText = "";
@@ -290,6 +325,7 @@ function createStreamParser(onText) {
             update.tool_info?.parameters
           );
           const bar = renderStepProgressBar(toolStepCount);
+          recordAgyStep(toolStepCount, update.tool_name, update.tool_info?.parameters);
           emit(
             `\n> ${icon} **【Step ${toolStepCount}】** \`${bar}\` ── **${action}**: \`${detail}\`\n` +
             `> 💭 *${reasoning}*\n`
@@ -299,6 +335,12 @@ function createStreamParser(onText) {
             typeof update.duration_seconds === "number"
               ? update.duration_seconds.toFixed(1)
               : null;
+          recordAgyStep(
+            toolStepCount,
+            update.tool_name,
+            update.tool_info?.parameters,
+            typeof update.duration_seconds === "number" ? update.duration_seconds : 0
+          );
           emit(dur !== null ? `> └─ ✓ 完了 (${dur}秒)\n\n` : "> └─ ✓ 完了\n\n");
         }
         return;
@@ -330,6 +372,18 @@ function createStreamParser(onText) {
           `\n---\n> 🎉 **【自律処理完了】** \`[▰▰▰▰▰▰▰▰] 100%\` ── 全 ${toolStepCount} ステップの自律処理が完了しました。回答を出力します：\n\n`
         );
       }
+
+      try {
+        const stateDir = path.join(os.homedir(), ".cursor-codex-bridge", "run");
+        const stateFile = path.join(stateDir, "execution-state.json");
+        let current = {};
+        try { current = JSON.parse(fs.readFileSync(stateFile, "utf8")); } catch {}
+        current.active = false;
+        current.progress = 100;
+        current.currentAction = "自律処理完了 (待機中)";
+        current.lastUpdatedAt = Date.now();
+        fs.writeFileSync(stateFile, JSON.stringify(current, null, 2), "utf8");
+      } catch {}
 
       if (resultResponse && !streamedModelResponse) {
         emit(resultResponse);

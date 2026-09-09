@@ -700,21 +700,23 @@
         document.getElementById('status-dot').className = 'status-dot ' + (bridgeOnline ? '' : 'offline');
         document.getElementById('bridge-status-text').textContent = bridgeOnline ? 'Ready' : 'Bridge Offline';
 
-        // Check codex status
-        const now = new Date();
-        const target = new Date();
-        target.setHours(19, 58, 0, 0);
-        const diffSec = Math.floor((target - now) / 1000);
-
-        const codexEl = document.getElementById('stat-codex');
-        if (diffSec > 0) {
-          const m = Math.floor(diffSec / 60);
-          const s = diffSec % 60;
-          codexEl.textContent = `レート制限中 (19:58 リセット / 残り約${m}分)`;
-          codexEl.style.color = 'var(--accent-orange)';
+        if (data.monitor && data.monitor.llm) {
+          const m = data.monitor.llm;
+          if (m.codex) {
+            document.getElementById('stat-codex').textContent = `${m.codex.status} · ${m.codex.billing}`;
+            document.getElementById('stat-codex').style.color = 'var(--accent-green)';
+          }
+          if (m.antigravity) {
+            document.getElementById('stat-gemini').textContent = `${m.antigravity.status} · ${m.antigravity.billing}`;
+            document.getElementById('stat-gemini').style.color = 'var(--accent-green)';
+          }
+          if (m.mimo) {
+            document.getElementById('stat-mimo').textContent = `${m.mimo.status} · ${m.mimo.billing}`;
+            document.getElementById('stat-mimo').style.color = 'var(--accent-orange)';
+          }
         } else {
-          codexEl.textContent = '利用可能 (リセット完了)';
-          codexEl.style.color = 'var(--accent-green)';
+          document.getElementById('stat-codex').textContent = '利用可能 (定額サブスク)';
+          document.getElementById('stat-codex').style.color = 'var(--accent-green)';
         }
       } catch (err) {
         console.error('Failed to load status:', err);

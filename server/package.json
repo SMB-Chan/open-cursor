@@ -7,8 +7,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "check": "node --check config.js && node --check index.js && node --check engine.js && node --check context.js && node --check compressor.js && node --check config.test.js && node --check index.test.js && node --check context.test.js && node --check engine.test.js && node --check routing-safety.test.js && node --check compressor.test.js",
-    "test": "node --test config.test.js index.test.js context.test.js engine.test.js routing-safety.test.js compressor.test.js"
+    "check": "node --check config.js && node --check index.js && node --check engine.js && node --check context.js && node --check compressor.js && node --check monitor.js && node --check config.test.js && node --check index.test.js && node --check context.test.js && node --check engine.test.js && node --check routing-safety.test.js && node --check compressor.test.js && node --check monitor.test.js",
+    "test": "node --test config.test.js index.test.js context.test.js engine.test.js routing-safety.test.js compressor.test.js monitor.test.js"
   },
   "engines": {
     "node": ">=18"
