@@ -27,11 +27,21 @@ function nonEmptyString(value, label) {
   return value.trim();
 }
 
+function exactArray(value, expected, label) {
+  if (
+    !Array.isArray(value) ||
+    value.length !== expected.length ||
+    expected.some((item, index) => value[index] !== item)
+  ) {
+    throw new RuntimeConfigError(`${label} must be exactly: ${expected.join(" -> ")}`);
+  }
+}
+
 function envInteger(env, name, fallback, min, max = Number.MAX_SAFE_INTEGER, overrides) {
   const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+  if (!Number.isInteger(parsed) || String(parsed) !== String(raw).trim() || parsed < min || parsed > max) {
     throw new RuntimeConfigError(`${name} must be an integer between ${min} and ${max}`);
   }
   overrides.push(name);
@@ -48,11 +58,12 @@ function envString(env, name, fallback, overrides) {
 function envBoolean(env, name, fallback, overrides) {
   const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
-  if (raw === "1" || raw.toLowerCase() === "true") {
+  const normalized = String(raw).toLowerCase();
+  if (normalized === "1" || normalized === "true") {
     overrides.push(name);
     return true;
   }
-  if (raw === "0" || raw.toLowerCase() === "false") {
+  if (normalized === "0" || normalized === "false") {
     overrides.push(name);
     return false;
   }
@@ -74,6 +85,9 @@ function validateRawConfig(raw) {
   const bridge = raw.bridge || {};
   integer(bridge.port, "bridge.port", 1, 65535);
   nonEmptyString(bridge.host, "bridge.host");
+  if (typeof bridge.allowRemote !== "boolean") {
+    throw new RuntimeConfigError("bridge.allowRemote must be boolean");
+  }
 
   const execution = raw.execution || {};
   integer(execution.agentTimeoutMs, "execution.agentTimeoutMs", 1000);
@@ -91,6 +105,12 @@ function validateRawConfig(raw) {
   }
 
   const collaboration = raw.collaboration || {};
+  exactArray(collaboration.pipeline, ["plan", "implement"], "collaboration.pipeline");
+  exactArray(
+    collaboration.collaborative,
+    ["plan", "implement", "review", "refine"],
+    "collaboration.collaborative"
+  );
   if (collaboration.workspaceWriter !== "codex") {
     throw new RuntimeConfigError("collaboration.workspaceWriter must be codex");
   }
@@ -114,6 +134,11 @@ function validateRawConfig(raw) {
     }
   }
 
+  const routing = raw.routing || {};
+  if (!["collaborative", "pipeline", "codex", "antigravity"].includes(routing.default)) {
+    throw new RuntimeConfigError("routing.default is invalid");
+  }
+
   return raw;
 }
 
@@ -124,7 +149,7 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
   const bridge = {
     port: envInteger(env, "BRIDGE_PORT", raw.bridge.port, 1, 65535, overrides),
     host: envString(env, "BRIDGE_HOST", raw.bridge.host, overrides),
-    allowRemote: envBoolean(env, "BRIDGE_ALLOW_REMOTE", raw.bridge.allowRemote === true, overrides),
+    allowRemote: envBoolean(env, "BRIDGE_ALLOW_REMOTE", raw.bridge.allowRemote, overrides),
   };
 
   const execution = {
@@ -231,6 +256,29 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
   });
 }
 
+function applyRuntimeDefaultsToEnv(config, env = process.env) {
+  const defaults = {
+    BRIDGE_PORT: config.bridge.port,
+    BRIDGE_HOST: config.bridge.host,
+    BRIDGE_ALLOW_REMOTE: config.bridge.allowRemote ? "1" : "0",
+    BRIDGE_AGENT_TIMEOUT_MS: config.execution.agentTimeoutMs,
+    BRIDGE_KILL_GRACE_MS: config.execution.killGraceMs,
+    BRIDGE_MAX_BODY_BYTES: config.execution.maxBodyBytes,
+    BRIDGE_MAX_OUTPUT_BYTES: config.execution.maxOutputBytes,
+    BRIDGE_CONTEXT_MAX_FILES: config.context.maxFiles,
+    BRIDGE_CONTEXT_MAX_BYTES: config.context.maxBytes,
+    BRIDGE_CONTEXT_FILE_BYTES: config.context.maxFileBytes,
+    BRIDGE_DIFF_MAX_BYTES: config.context.diffMaxBytes,
+    CODEX_BIN: config.agents.codex.binary,
+    AGY_BIN: config.agents.antigravity.binary,
+  };
+
+  for (const [name, value] of Object.entries(defaults)) {
+    if (env[name] === undefined || env[name] === "") env[name] = String(value);
+  }
+  return env;
+}
+
 function loadRuntimeConfig({ env = process.env, home = homedir(), path } = {}) {
   const configPath = path || env.BRIDGE_CONFIG_PATH || DEFAULT_CONFIG_PATH;
   if (!existsSync(configPath)) {
@@ -248,10 +296,12 @@ function loadRuntimeConfig({ env = process.env, home = homedir(), path } = {}) {
 }
 
 const runtimeConfig = loadRuntimeConfig();
+applyRuntimeDefaultsToEnv(runtimeConfig);
 
 export {
   DEFAULT_CONFIG_PATH,
   RuntimeConfigError,
+  applyRuntimeDefaultsToEnv,
   expandHome,
   loadRuntimeConfig,
   parseRuntimeConfig,
