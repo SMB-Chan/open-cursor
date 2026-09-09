@@ -80,6 +80,14 @@ const AGENTS = {
     },
     strengths: ["analysis", "architecture", "research", "multimodal", "web-search"],
   },
+  mimo: {
+    name: "Xiaomi MiMo (mimo-v2.5-pro)",
+    authCheck: async () => {
+      const key = await getMiMoApiKey();
+      return Boolean(key);
+    },
+    strengths: ["code-generation", "fast-inference", "multilingual"],
+  },
 };
 
 const activeProcesses = new Map();
@@ -314,6 +322,96 @@ function runAntigravityDetached(prompt, { model = "pro", signal, onChunk } = {})
       onChunk,
     })
   );
+}
+
+async function getMiMoApiKey() {
+  if (process.env.MIMO_API_KEY) return process.env.MIMO_API_KEY;
+  try {
+    const envPath = join(homedir(), ".local/share/cursor-open-providers/continue/.env");
+    const content = await readFile(envPath, "utf-8");
+    const match = content.match(/PROVIDER_0_API_KEY=["']?([^"'\n\r]+)["']?/);
+    if (match) return match[1];
+  } catch {}
+  return "";
+}
+
+async function runMiMo(prompt, { model = "mimo-v2.5-pro", signal, onChunk } = {}) {
+  const apiKey = await getMiMoApiKey();
+  if (!apiKey) {
+    throw new HttpError(502, "MiMo API key not found in environment or continue/.env");
+  }
+
+  const endpoint = "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions";
+  const payload = {
+    model: model || "mimo-v2.5-pro",
+    max_tokens: 8192,
+    stream: Boolean(onChunk),
+    thinking: { type: "disabled" },
+    messages: [{ role: "user", content: prompt }],
+  };
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new HttpError(502, `MiMo API returned ${response.status}: ${errorText}`);
+  }
+
+  if (onChunk && response.body) {
+    let fullContent = "";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data:")) continue;
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(dataStr);
+          const delta = parsed.choices?.[0]?.delta?.content || "";
+          if (delta) {
+            fullContent += delta;
+            onChunk(delta);
+          }
+        } catch {}
+      }
+    }
+    return {
+      content: fullContent,
+      stdout: fullContent,
+      stderr: "",
+      agent: "mimo",
+      code: 0,
+      executionId: randomUUID(),
+    };
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+  return {
+    content,
+    stdout: content,
+    stderr: "",
+    agent: "mimo",
+    code: 0,
+    executionId: randomUUID(),
+  };
 }
 
 function requireSuccessfulAgent(result) {
@@ -612,6 +710,105 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
       };
     }
 
+    case "mimo": {
+      const result = await runMiMo(prompt, {
+        model: model || "mimo-v2.5-pro",
+        signal,
+        onChunk: (text) => onEvent?.({ text, agent: "mimo", phase: "response" }),
+      });
+      return requireSuccessfulAgent(result);
+    }
+
+    case "mimo-gemini": {
+      const { workspaceContext } = await buildCollaborationInputs(cwd, prompt);
+
+      emitHeader(
+        onEvent,
+        "## 📋 Gemini 計画・分析 (Planning)\n\n",
+        "antigravity",
+        "planning-header"
+      );
+      const plan = requireSuccessfulAgent(
+        await runAntigravityDetached(buildPlanPrompt(prompt, workspaceContext.text), {
+          model: model === "flash" ? "flash" : "pro",
+          signal,
+          onChunk: (text) =>
+            onEvent?.({ text, agent: "antigravity", phase: "planning" }),
+        })
+      );
+
+      emitHeader(
+        onEvent,
+        "\n\n---\n\n## 💻 MiMo 実装・回答 (Implementation)\n\n",
+        "mimo",
+        "implementation-header"
+      );
+      const mimoPrompt = [
+        "You are an expert software engineer collaborating with Gemini in Open-Cursor.",
+        "Gemini has analyzed the project and created the architectural plan below.",
+        "Please provide the complete implementation, code, or answer addressing the user's task, following Gemini's plan.",
+        "Write clean, production-ready code with clear explanations.",
+        "",
+        "# Original Task",
+        prompt,
+        "",
+        "# Gemini Plan & Analysis",
+        clipText(plan.content, 64 * 1024),
+        "",
+        "# Workspace Context",
+        clipText(workspaceContext.text, 32 * 1024),
+      ].join("\n");
+
+      const implementation = requireSuccessfulAgent(
+        await runMiMo(mimoPrompt, {
+          model: "mimo-v2.5-pro",
+          signal,
+          onChunk: (text) =>
+            onEvent?.({ text, agent: "mimo", phase: "implementation" }),
+        })
+      );
+
+      emitHeader(
+        onEvent,
+        "\n\n---\n\n## 🔍 Gemini 検証・レビュー (Review & Verification)\n\n",
+        "antigravity",
+        "review-header"
+      );
+      const reviewPrompt = [
+        untrustedContextPreamble(),
+        "Review MiMo's implementation and response for correctness, edge cases, potential bugs, security, and whether the user's task is fully satisfied.",
+        "Provide a concise, constructive assessment and any recommended improvements.",
+        "",
+        "# Original Task",
+        prompt,
+        "",
+        "# Architectural Plan",
+        clipText(plan.content, 32 * 1024),
+        "",
+        "# MiMo Implementation",
+        clipText(implementation.content, 48 * 1024),
+      ].join("\n");
+
+      const review = requireSuccessfulAgent(
+        await runAntigravityDetached(reviewPrompt, {
+          model: model === "flash" ? "flash" : "pro",
+          signal,
+          onChunk: (text) =>
+            onEvent?.({ text, agent: "antigravity", phase: "review" }),
+        })
+      );
+
+      return {
+        content: [
+          `## 📋 Gemini 計画・分析 (Planning)\n\n${clipText(plan.content, 64 * 1024)}`,
+          `## 💻 MiMo 実装・回答 (Implementation)\n\n${clipText(implementation.content, 64 * 1024)}`,
+          `## 🔍 Gemini 検証・レビュー (Review & Verification)\n\n${clipText(review.content, 64 * 1024)}`,
+        ].join("\n\n---\n\n"),
+        agent: "mimo-gemini",
+        code: 0,
+      };
+    }
+
     default: {
       const result = await runCodex(prompt, {
         cwd,
@@ -677,7 +874,9 @@ export {
   executionConfig,
   formatCollaborativeResult,
   getCodexModel,
+  getMiMoApiKey,
   orchestrate,
+  runMiMo,
   runProcess,
   stopActiveProcesses,
 };

@@ -47,6 +47,22 @@ test("namespaced models resolve to the correct agent and CLI model", () => {
     mode: "antigravity",
     model: "flash",
   });
+  assert.deepEqual(parseAgentSelection("mimo", undefined), {
+    mode: "mimo",
+    model: undefined,
+  });
+  assert.deepEqual(parseAgentSelection("mimo-gemini", undefined), {
+    mode: "mimo-gemini",
+    model: undefined,
+  });
+  assert.deepEqual(parseAgentSelection("mimo/mimo-v2.5-pro", undefined), {
+    mode: "mimo",
+    model: "mimo-v2.5-pro",
+  });
+  assert.deepEqual(parseAgentSelection("mimo-gemini/flash", undefined), {
+    mode: "mimo-gemini",
+    model: "flash",
+  });
 });
 
 test("conflicting model namespace and explicit routing mode are rejected", () => {

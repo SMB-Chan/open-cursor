@@ -29,7 +29,14 @@ import {
 const PORT = envInt("BRIDGE_PORT", 9876, 1, 65535);
 const HOST = process.env.BRIDGE_HOST || "127.0.0.1";
 const MAX_BODY_BYTES = envInt("BRIDGE_MAX_BODY_BYTES", 1024 * 1024, 1024);
-const ROUTING_MODES = new Set(["codex", "antigravity", "collaborative", "pipeline"]);
+const ROUTING_MODES = new Set([
+  "codex",
+  "antigravity",
+  "collaborative",
+  "pipeline",
+  "mimo",
+  "mimo-gemini",
+]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
 function envInt(name, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
@@ -59,6 +66,8 @@ function parseAgentSelection(modelName, headerMode) {
 
     if (namespace === "codex") namespaceMode = "codex";
     if (namespace === "antigravity" || namespace === "gemini") namespaceMode = "antigravity";
+    if (namespace === "mimo") namespaceMode = "mimo";
+    if (namespace === "mimo-gemini" || namespace === "gemini-mimo") namespaceMode = "mimo-gemini";
 
     if (namespaceMode) {
       if (mode && mode !== namespaceMode) {
@@ -74,7 +83,11 @@ function parseAgentSelection(modelName, headerMode) {
     const lower = requestedModel.toLowerCase();
     if (ROUTING_MODES.has(lower)) mode = lower;
     else if (lower === "gemini") mode = "antigravity";
-  } else if ((mode === "codex" || mode === "antigravity") && requestedModel) {
+    else if (lower === "mimo-gemini" || lower === "gemini-mimo") mode = "mimo-gemini";
+  } else if (
+    (mode === "codex" || mode === "antigravity" || mode === "mimo" || mode === "mimo-gemini") &&
+    requestedModel
+  ) {
     const lower = requestedModel.toLowerCase();
     if (!ROUTING_MODES.has(lower) && lower !== "gemini") model = requestedModel;
   }
@@ -373,8 +386,20 @@ async function handleModels(req, res) {
   const codexModel = await getCodexModel();
   const codexAuth = await AGENTS.codex.authCheck();
   const agyAuth = await AGENTS.antigravity.authCheck();
+  const mimoAuth = await AGENTS.mimo.authCheck();
 
-  const models = [
+  const models = [];
+
+  if (mimoAuth && agyAuth) {
+    models.push({
+      id: "mimo-gemini",
+      object: "model",
+      owned_by: "bridge",
+      description: "MiMo + Gemini (協調モード: Gemini 計画/レビュー + MiMo 実装)",
+    });
+  }
+
+  models.push(
     {
       id: "collaborative",
       object: "model",
@@ -386,8 +411,25 @@ async function handleModels(req, res) {
       object: "model",
       owned_by: "bridge",
       description: "Detached Gemini analysis → Codex implementation",
-    },
-  ];
+    }
+  );
+
+  if (mimoAuth) {
+    models.push(
+      {
+        id: "mimo",
+        object: "model",
+        owned_by: "xiaomi",
+        description: "Xiaomi MiMo (mimo-v2.5-pro)",
+      },
+      {
+        id: "mimo/mimo-v2.5-pro",
+        object: "model",
+        owned_by: "xiaomi",
+        description: "Xiaomi MiMo (mimo-v2.5-pro)",
+      }
+    );
+  }
 
   if (codexAuth) {
     models.push({
@@ -446,6 +488,7 @@ async function handleAgents(req, res) {
 async function handleHealth(req, res) {
   const codexAuth = await AGENTS.codex.authCheck();
   const agyAuth = await AGENTS.antigravity.authCheck();
+  const mimoAuth = await AGENTS.mimo.authCheck();
 
   sendJSON(res, 200, {
     status: "ok",
@@ -459,6 +502,7 @@ async function handleHealth(req, res) {
     agents: {
       codex: { available: codexAuth, source: "ChatGPT subscription" },
       antigravity: { available: agyAuth, source: "Gemini AI Pro subscription" },
+      mimo: { available: mimoAuth, source: "Xiaomi MiMo token plan" },
     },
   });
 }
@@ -516,6 +560,7 @@ function startServer() {
   server.listen(PORT, HOST, async () => {
     const codexAuth = await AGENTS.codex.authCheck();
     const agyAuth = await AGENTS.antigravity.authCheck();
+    const mimoAuth = await AGENTS.mimo.authCheck();
     const execution = executionConfig();
 
     console.log(`
@@ -524,8 +569,9 @@ function startServer() {
 ║            local · subscription-authenticated               ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Endpoint : http://${HOST}:${PORT}
-║  Codex    : ${codexAuth ? "READY" : "NOT AUTHENTICATED"}
+║  MiMo     : ${mimoAuth ? "READY" : "NOT CONFIGURED"}
 ║  Gemini   : ${agyAuth ? "READY" : "NOT AUTHENTICATED"}
+║  Codex    : ${codexAuth ? "READY" : "NOT AUTHENTICATED"}
 ║  Timeout  : ${execution.timeout_ms} ms
 ║  Max out  : ${execution.max_output_bytes} bytes
 ╚══════════════════════════════════════════════════════════════╝
