@@ -129,6 +129,47 @@ test("git review context omits secret-like file contents", async () => {
   });
 });
 
+test("git review context preserves whitespace in changed filenames", async () => {
+  await withTempDir(async (directory) => {
+    await initRepo(directory);
+    const name = " spaced file.txt ";
+    await writeFile(join(directory, name), "before-spaces\n");
+    await run("git", ["add", "--", name], directory);
+    await run("git", ["commit", "-m", "base"], directory);
+    const baseline = await getGitHead(directory);
+    await writeFile(join(directory, name), "after-spaces\n");
+
+    for (const baseRef of [baseline, undefined]) {
+      const review = await buildGitReviewContext(directory, { baseRef });
+      assert.match(review, /-before-spaces/);
+      assert.match(review, /\+after-spaces/);
+    }
+  });
+});
+
+test("git review treats wildcard filenames literally without including omitted paths", async () => {
+  await withTempDir(async (directory) => {
+    await initRepo(directory);
+    await writeFile(join(directory, "*.txt"), "before-literal\n");
+    await writeFile(join(directory, "secrets.txt"), "before-private\n");
+    await run("git", ["add", "."], directory);
+    await run("git", ["commit", "-m", "base"], directory);
+    const baseline = await getGitHead(directory);
+    await writeFile(join(directory, "*.txt"), "after-literal\n");
+    await writeFile(join(directory, "secrets.txt"), "after-private\n");
+
+    for (const staged of [false, true]) {
+      if (staged) await run("git", ["add", "."], directory);
+      for (const baseRef of [baseline, undefined]) {
+        const review = await buildGitReviewContext(directory, { baseRef });
+        assert.match(review, /-before-literal/);
+        assert.match(review, /\+after-literal/);
+        assert.doesNotMatch(review, /before-private|after-private|secrets\.txt/);
+      }
+    }
+  });
+});
+
 test("isolated reviewer directory is removed after use", async () => {
   let isolatedPath;
   const value = await withIsolatedDirectory(async (directory) => {

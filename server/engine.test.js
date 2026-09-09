@@ -9,7 +9,10 @@ import {
   buildReviewPrompt,
   formatCollaborativeResult,
   getResolvedModelsForMode,
+  markExecutionIdle,
+  orchestrate,
 } from "./engine.js";
+import { getExecutionState, updateExecutionState } from "./monitor.js";
 
 test("planning prompt treats repository context as untrusted detached data", () => {
   const prompt = buildPlanPrompt(
@@ -105,4 +108,45 @@ test("getResolvedModelsForMode exposes concrete model IDs for collaborative and 
 
   const autoAutonomous = getResolvedModelsForMode("autonomous");
   assert.deepEqual(autoAutonomous.activeModels, ["gemini-3.1-pro-high"]);
+});
+
+test("orchestrate always resets execution state to idle, even when agents fail", async () => {
+  // A codex run against a nonexistent workspace fails fast at spawn time
+  // (offline, no real agent invocation).
+  await assert.rejects(
+    orchestrate("implement something", {
+      mode: "codex",
+      cwd: "/nonexistent-open-cursor-test-path",
+    }),
+    () => true
+  );
+
+  const state = getExecutionState();
+  assert.equal(state.active, false, "execution state must not stay active after a failed run");
+  assert.equal(state.currentAction, "待機中 (アイドル)");
+});
+
+test("markExecutionIdle clears a stale active execution state", () => {
+  updateExecutionState({
+    active: true,
+    mode: "codex",
+    agent: "codex",
+    phase: "response",
+    progress: 42,
+    currentAction: "Codex実行中 [gpt-6-astra]",
+    targetFile: "src/app.js",
+  });
+
+  const before = getExecutionState();
+  assert.equal(before.active, true);
+
+  markExecutionIdle();
+
+  const state = getExecutionState();
+  assert.equal(state.active, false);
+  assert.equal(state.agent, null);
+  assert.equal(state.phase, null);
+  assert.equal(state.targetFile, null);
+  assert.equal(state.progress, 0);
+  assert.equal(state.currentAction, "待機中 (アイドル)");
 });

@@ -323,10 +323,9 @@ async function getGitHead(root) {
 }
 
 function parseNameOnly(output) {
-  return output
-    .split("\0")
-    .map((path) => path.trim())
-    .filter(Boolean);
+  // Git's NUL-delimited output preserves filename whitespace. Ignore an
+  // incomplete final record if command output was clipped by the byte limit.
+  return output.split("\0").slice(0, -1).filter(Boolean);
 }
 
 async function changedPaths(root, baseRef) {
@@ -403,7 +402,7 @@ async function buildGitReviewContext(root, options = {}) {
     if (options.baseRef) {
       diff = await captureCommand(
         "git",
-        ["diff", options.baseRef, "--no-ext-diff", "--unified=3", "--", ...paths.files],
+        ["--literal-pathspecs", "diff", options.baseRef, "--no-ext-diff", "--unified=3", "--", ...paths.files],
         { cwd: root, maxBytes: diffBudget }
       );
       diff.truncated ||= paths.truncated;
@@ -411,12 +410,12 @@ async function buildGitReviewContext(root, options = {}) {
       const unstagedBudget = Math.floor(diffBudget / 2);
       const unstaged = await captureCommand(
         "git",
-        ["diff", "--no-ext-diff", "--unified=3", "--", ...paths.files],
+        ["--literal-pathspecs", "diff", "--no-ext-diff", "--unified=3", "--", ...paths.files],
         { cwd: root, maxBytes: unstagedBudget }
       );
       const staged = await captureCommand(
         "git",
-        ["diff", "--cached", "--no-ext-diff", "--unified=3", "--", ...paths.files],
+        ["--literal-pathspecs", "diff", "--cached", "--no-ext-diff", "--unified=3", "--", ...paths.files],
         { cwd: root, maxBytes: diffBudget - unstagedBudget }
       );
       diff = {

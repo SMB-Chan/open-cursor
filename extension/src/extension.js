@@ -340,6 +340,23 @@ async function showStatus() {
       lines.push(`  ${agent.name}: ${status} [${agent.strengths.join(", ")}]`);
     }
 
+    try {
+      const stats = await fetchBridge("/v1/stats");
+      const r = stats.requests || {};
+      const uptime = stats.uptime_seconds || 0;
+      const uptimeLabel =
+        uptime >= 3600
+          ? `${Math.floor(uptime / 3600)}h${Math.floor((uptime % 3600) / 60)}m`
+          : uptime >= 60
+            ? `${Math.floor(uptime / 60)}m${uptime % 60}s`
+            : `${uptime}s`;
+      lines.push(
+        "",
+        `Requests: ${r.total ?? 0} total · ${r.completed ?? 0} completed · ${r.failed ?? 0} failed · ${r.cancelled ?? 0} cancelled`,
+        `Active: ${r.active ?? 0} · Bridge uptime: ${uptimeLabel}`
+      );
+    } catch {}
+
     vscode.window.showInformationMessage(lines.join("\n"), { modal: true });
   } catch (error) {
     updateStatus("offline");

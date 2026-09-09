@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
 // Load and project validated configuration before engine.js evaluates its
@@ -15,6 +16,11 @@ import { pathToFileURL } from "node:url";
 import { runtimeConfig } from "./config.js";
 import { compressMessages } from "./compressor.js";
 import { getMonitorData } from "./monitor.js";
+import {
+  getBridgeStats,
+  recordRequestEnd,
+  recordRequestStart,
+} from "./stats.js";
 import {
   AGENTS,
   ExecutionAbortedError,
@@ -177,6 +183,7 @@ async function resolveWorkspacePath(rawPath, prompt = "") {
 
 function parseBody(req) {
   return new Promise((resolvePromise, rejectPromise) => {
+    const decoder = new StringDecoder("utf8");
     let body = "";
     let bytes = 0;
     let settled = false;
@@ -194,7 +201,7 @@ function parseBody(req) {
         rejectOnce(new HttpError(413, `Request body exceeds ${MAX_BODY_BYTES} bytes`));
         return;
       }
-      body += chunk.toString();
+      body += decoder.write(chunk);
     });
 
     req.on("aborted", () =>
@@ -205,6 +212,7 @@ function parseBody(req) {
     req.on("end", () => {
       if (settled) return;
       settled = true;
+      body += decoder.end();
       if (!body.trim()) {
         resolvePromise({});
         return;
@@ -394,6 +402,7 @@ async function handleChat(req, res) {
   assertAgentsEnabled(effectiveMode);
 
   const requestId = resolveRequestId(req.headers["x-open-cursor-request-id"]);
+  recordRequestStart(requestId, selection.mode || "auto");
   const journal = shouldJournalWorkspace(selection.mode, taskInfo)
     ? await startWorkspaceReceipt(cwd, {
         id: requestId,
@@ -402,83 +411,102 @@ async function handleChat(req, res) {
     : null;
   const lifetime = bindRequestLifetime(req, res);
 
-  if (stream) {
-    const sse = createSseResponse(res, requestId);
+  try {
+    if (stream) {
+      const sse = createSseResponse(res, requestId);
+      let completionAgent = selection.mode || "auto";
+      try {
+        const result = await orchestrate(fullPrompt, {
+          cwd,
+          mode: selection.mode,
+          model: selection.model,
+          signal: lifetime.signal,
+          onEvent: ({ text, agent, phase }) => {
+            sse.delta(text, responseModel(agent, selection.model), {
+              agent,
+              phase,
+            });
+          },
+        });
+        completionAgent = result.agent;
+
+        const workspaceReceipt = await finishWorkspaceReceipt(journal, { status: "completed" });
+        sse.finish(responseModel(result.agent, selection.model), {
+          agent: result.agent,
+          active_executions: activeExecutionCount(),
+          ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
+        });
+      } catch (error) {
+        const workspaceReceipt = await finishWorkspaceReceipt(journal, {
+          status: lifetime.signal.aborted ? "cancelled" : "failed",
+          error,
+        });
+        recordRequestEnd(requestId, {
+          status: lifetime.signal.aborted ? "cancelled" : "failed",
+          agent: completionAgent,
+          error: lifetime.signal.aborted ? null : error,
+        });
+        if (!lifetime.signal.aborted) {
+          sse.fail(error, workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {});
+        }
+        return;
+      }
+
+      recordRequestEnd(requestId, { status: "completed", agent: completionAgent });
+      lifetime.cleanup();
+      return;
+    }
+
+    let completionAgent = selection.mode || "auto";
     try {
       const result = await orchestrate(fullPrompt, {
         cwd,
         mode: selection.mode,
         model: selection.model,
         signal: lifetime.signal,
-        onEvent: ({ text, agent, phase }) => {
-          sse.delta(text, responseModel(agent, selection.model), {
-            agent,
-            phase,
-          });
-        },
       });
+      completionAgent = result.agent;
 
       const workspaceReceipt = await finishWorkspaceReceipt(journal, { status: "completed" });
-      sse.finish(responseModel(result.agent, selection.model), {
-        agent: result.agent,
-        active_executions: activeExecutionCount(),
-        ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
-      });
+
+      sendJSON(
+        res,
+        200,
+        {
+          id: requestId,
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: responseModel(result.agent, selection.model),
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: result.content },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          open_cursor: {
+            agent: result.agent,
+            active_executions: activeExecutionCount(),
+            ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
+          },
+        },
+        { "X-Open-Cursor-Request-Id": requestId }
+      );
+      recordRequestEnd(requestId, { status: "completed", agent: completionAgent });
     } catch (error) {
       const workspaceReceipt = await finishWorkspaceReceipt(journal, {
         status: lifetime.signal.aborted ? "cancelled" : "failed",
         error,
       });
-      if (!lifetime.signal.aborted) {
-        sse.fail(error, workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {});
-      }
-    } finally {
-      lifetime.cleanup();
+      recordRequestEnd(requestId, {
+        status: lifetime.signal.aborted ? "cancelled" : "failed",
+        agent: completionAgent,
+        error: lifetime.signal.aborted ? null : error,
+      });
+      if (workspaceReceipt) error.workspaceReceipt = workspaceReceipt;
+      throw error;
     }
-    return;
-  }
-
-  try {
-    const result = await orchestrate(fullPrompt, {
-      cwd,
-      mode: selection.mode,
-      model: selection.model,
-      signal: lifetime.signal,
-    });
-
-    const workspaceReceipt = await finishWorkspaceReceipt(journal, { status: "completed" });
-
-    sendJSON(
-      res,
-      200,
-      {
-        id: requestId,
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: responseModel(result.agent, selection.model),
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: result.content },
-            finish_reason: "stop",
-          },
-        ],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-        open_cursor: {
-          agent: result.agent,
-          active_executions: activeExecutionCount(),
-          ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
-        },
-      },
-      { "X-Open-Cursor-Request-Id": requestId }
-    );
-  } catch (error) {
-    const workspaceReceipt = await finishWorkspaceReceipt(journal, {
-      status: lifetime.signal.aborted ? "cancelled" : "failed",
-      error,
-    });
-    if (workspaceReceipt) error.workspaceReceipt = workspaceReceipt;
-    throw error;
   } finally {
     lifetime.cleanup();
   }
@@ -655,6 +683,7 @@ async function handleHealth(req, res) {
       active: activeExecutionCount(),
       ...executionConfig(),
     },
+    requests: getBridgeStats().requests,
     configuration: {
       env_overrides: runtimeConfig.overrides,
     },
@@ -698,6 +727,8 @@ const server = createServer(async (req, res) => {
       const workspace = url.searchParams.get("workspace") || req.headers["x-workspace-path"];
       const data = await getMonitorData(workspace);
       sendJSON(res, 200, data);
+    } else if ((url.pathname === "/v1/stats" || url.pathname === "/stats") && req.method === "GET") {
+      sendJSON(res, 200, { object: "bridge.stats", ...getBridgeStats() });
     } else if (
       url.pathname.startsWith("/v1/execution-receipts/") &&
       req.method === "GET"
@@ -782,9 +813,11 @@ export {
   assertAgentsEnabled,
   buildPrompt,
   formatCollaborativeResult,
+  getBridgeStats,
   getExecutionReceipt,
   orchestrate,
   parseAgentSelection,
+  parseBody,
   rejectBrowserOrigin,
   requiredAgentsForMode,
   resolveRequestId,

@@ -14,7 +14,7 @@ import {
 import { compressHandoff, safePromptArg } from "./compressor.js";
 import { updateExecutionState } from "./monitor.js";
 
-const VERSION = "2.4.0";
+const VERSION = "2.5.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");
@@ -618,7 +618,31 @@ async function buildCollaborationInputs(cwd, prompt) {
   return { workspaceContext, baselineHead, initialGitState };
 }
 
+function markExecutionIdle() {
+  updateExecutionState({
+    active: false,
+    phase: null,
+    agent: null,
+    startedAt: null,
+    progress: 0,
+    currentAction: "待機中 (アイドル)",
+    targetFile: null,
+  });
+}
+
 async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
+  try {
+    return await orchestrateMode(prompt, { cwd, mode, model, signal, onEvent });
+  } finally {
+    // Every orchestrated run — success, failure, cancellation or timeout —
+    // must return the shared execution state to idle. Earlier versions only
+    // reset collaborative runs, leaving the live monitor stuck on
+    // "active" after codex/antigravity/autonomous/auto runs.
+    markExecutionIdle();
+  }
+}
+
+async function orchestrateMode(prompt, { cwd, mode, model, signal, onEvent } = {}) {
   const isAuto = !mode || mode === "auto";
   const taskType = analyzeTask(prompt);
   let selectedMode = isAuto ? taskType.routing : mode;
@@ -751,6 +775,18 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
     }
 
     case "pipeline": {
+      updateExecutionState({
+        active: true,
+        mode: isAuto ? "auto" : "pipeline",
+        selectedMode: "pipeline",
+        phase: "analysis",
+        agent: "antigravity",
+        modelId: "gemini-3.1-pro-high",
+        modelDisplayName: "Gemini 3.1 Pro (High)",
+        activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
+        progress: 25,
+        currentAction: "分析・設計フェーズ [gemini-3.1-pro-high]",
+      });
       const { workspaceContext, initialGitState } = await buildCollaborationInputs(cwd, prompt);
 
       emitHeader(
@@ -771,6 +807,19 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
       );
 
       const compressedAnalysis = compressHandoff(analysis.content, { phase: "plan" });
+
+      updateExecutionState({
+        active: true,
+        mode: isAuto ? "auto" : "pipeline",
+        selectedMode: "pipeline",
+        phase: "implementation",
+        agent: "codex",
+        modelId: "gpt-6-astra",
+        modelDisplayName: "GPT-6-Astra",
+        activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
+        progress: 60,
+        currentAction: "実装フェーズ [gpt-6-astra]",
+      });
 
       emitHeader(
         onEvent,
@@ -968,6 +1017,18 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
     }
 
     case "mimo": {
+      const mimoModelId = model || "mimo-v2.5-pro";
+      updateExecutionState({
+        active: true,
+        mode: isAuto ? "auto" : "mimo",
+        selectedMode: "mimo",
+        agent: "mimo",
+        modelId: mimoModelId,
+        modelDisplayName: "Xiaomi MiMo v2.5 Pro",
+        activeModels: [mimoModelId],
+        progress: 50,
+        currentAction: `MiMo応答生成中 [${mimoModelId}] (read-only)`,
+      });
       const result = await runMiMo(prompt, {
         model: model || "mimo-v2.5-pro",
         signal,
@@ -977,6 +1038,18 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
     }
 
     case "mimo-gemini": {
+      updateExecutionState({
+        active: true,
+        mode: isAuto ? "auto" : "mimo-gemini",
+        selectedMode: "mimo-gemini",
+        phase: "plan",
+        agent: "antigravity",
+        modelId: "gemini-3.1-pro-high",
+        modelDisplayName: "Gemini 3.1 Pro (High)",
+        activeModels: ["gemini-3.1-pro-high", "mimo-v2.5-pro"],
+        progress: 25,
+        currentAction: "計画・分析フェーズ [gemini-3.1-pro-high]",
+      });
       const { workspaceContext } = await buildCollaborationInputs(cwd, prompt);
 
       emitHeader(
@@ -997,6 +1070,19 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
       );
 
       const compressedPlan = compressHandoff(plan.content, { phase: "plan" });
+
+      updateExecutionState({
+        active: true,
+        mode: isAuto ? "auto" : "mimo-gemini",
+        selectedMode: "mimo-gemini",
+        phase: "implementation",
+        agent: "mimo",
+        modelId: "mimo-v2.5-pro",
+        modelDisplayName: "Xiaomi MiMo v2.5 Pro",
+        activeModels: ["gemini-3.1-pro-high", "mimo-v2.5-pro"],
+        progress: 55,
+        currentAction: "解決案生成フェーズ [mimo-v2.5-pro] (read-only)",
+      });
 
       emitHeader(
         onEvent,
@@ -1033,6 +1119,19 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
       );
 
       const compressedImpl = compressHandoff(implementation.content, { phase: "implementation" });
+
+      updateExecutionState({
+        active: true,
+        mode: isAuto ? "auto" : "mimo-gemini",
+        selectedMode: "mimo-gemini",
+        phase: "review",
+        agent: "antigravity",
+        modelId: "gemini-3.1-pro-high",
+        modelDisplayName: "Gemini 3.1 Pro (High)",
+        activeModels: ["gemini-3.1-pro-high", "mimo-v2.5-pro"],
+        progress: 85,
+        currentAction: "検証・レビューフェーズ [gemini-3.1-pro-high]",
+      });
 
       emitHeader(
         onEvent,
@@ -1161,6 +1260,7 @@ export {
   formatCollaborativeResult,
   getCodexModel,
   getMiMoApiKey,
+  markExecutionIdle,
   orchestrate,
   runMiMo,
   runProcess,

@@ -282,6 +282,18 @@ The extension-managed bridge intentionally supplies its configured `BRIDGE_PORT`
 
 `GET /health` and `GET /v1/agents` report only the **names** of active environment overrides, never their values.
 
+## Bridge stats and execution-state lifecycle
+
+Open-Cursor 2.5 tracks bounded in-memory bridge metrics for the lifetime of the current process:
+
+```text
+GET /v1/stats
+```
+
+The payload includes uptime, request totals (completed/failed/cancelled/active), per-mode and per-agent counters, average duration, and a capped ring buffer of the 20 most recent requests. Stats never include prompt or response content and are never persisted to disk. `GET /health` also embeds the request totals.
+
+Since 2.5, every orchestrated run — success, failure, cancellation, or timeout — returns the shared execution state to idle. Earlier versions left codex/antigravity/autonomous/auto runs permanently "active" on the live monitor. Pipeline, MiMo, and MiMo+Gemini runs now also publish phase progress to the monitor.
+
 ### Safety invariants in configuration
 
 Several properties are validated as invariants rather than freely configurable knobs:

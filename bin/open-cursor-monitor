@@ -33,7 +33,7 @@ function renderLogo(termWidth) {
     "  / _ \\ _ __  ___ _ _   / __|  _ _ _ ___ ___  _ _       ",
     " | (_) | '_ \\/ -_) ' \\ | (__  | '_| (_-</ _ \\/ '_|      ",
     "  \\___/| .__/\\___|_||_| \\___| |_| |_/__/\\___/|_|        ",
-    "       |_| ⚡ Multi-Agent Coding Bridge · v2.4.0        "
+    "       |_| ⚡ Multi-Agent Coding Bridge · v2.5.0        "
   ];
   const colors = [CYAN, CYAN, BLUE, MAGENTA, MAGENTA];
   return logo.map((line, idx) => colors[idx] + BOLD + line + RESET).join("\n") + "\n";
@@ -41,7 +41,7 @@ function renderLogo(termWidth) {
 
 function renderLogoHeader(termRows, termWidth) {
   if (termRows && termRows < 24) {
-    return `${CYAN}${BOLD} ✦ OPEN-CURSOR${RESET} · ${MAGENTA}Multi-Agent Autonomous Coding Bridge v2.4.0${RESET} ${DIM}[Codex · Gemini · MiMo]${RESET}\n`;
+    return `${CYAN}${BOLD} ✦ OPEN-CURSOR${RESET} · ${MAGENTA}Multi-Agent Autonomous Coding Bridge v2.5.0${RESET} ${DIM}[Codex · Gemini · MiMo]${RESET}\n`;
   }
   return renderLogo(termWidth);
 }
@@ -297,6 +297,23 @@ function renderScreen(data, frame = 1, latencyMs = 0) {
     for (const s of exec.recentSteps.slice(0, 4)) {
       const dur = s.duration ? `(${s.duration.toFixed(1)}s)` : "";
       out += `   └─ ${CYAN}Step ${s.step}${RESET}: ${s.action || s.file || "処理"} ${DIM}${dur}${RESET}\n`;
+    }
+  }
+
+  // Lifetime bridge stats
+  const stats = data.stats;
+  if (stats && stats.requests) {
+    const req = stats.requests;
+    const uptime = stats.uptime_seconds || 0;
+    const uptimeStr = uptime >= 3600
+      ? `${Math.floor(uptime / 3600)}h${String(Math.floor((uptime % 3600) / 60)).padStart(2, "0")}m`
+      : uptime >= 60
+        ? `${Math.floor(uptime / 60)}m${String(uptime % 60).padStart(2, "0")}s`
+        : `${uptime}s`;
+    const agentCounts = Object.entries(stats.agents || {});
+    out += `  ${DIM}📊 累計リクエスト:${RESET} ${BOLD}${req.total || 0}${RESET} ${DIM}(完了 ${req.completed || 0} / 失敗 ${req.failed || 0} / 中止 ${req.cancelled || 0}) · 稼働 ${uptimeStr}${RESET}\n`;
+    if (agentCounts.length > 0) {
+      out += `     └─ ${DIM}エージェント別: ${agentCounts.map(([a, n]) => `${a}:${n}`).join(" · ")}${RESET}\n`;
     }
   }
 

@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { runtimeConfig } from "./config.js";
 
 import {
   HttpError,
@@ -9,6 +11,7 @@ import {
   buildPrompt,
   formatCollaborativeResult,
   parseAgentSelection,
+  parseBody,
   rejectBrowserOrigin,
   resolveRequestId,
   runProcess,
@@ -19,6 +22,52 @@ import {
   buildRefinementPrompt,
   buildReviewPrompt,
 } from "./engine.js";
+
+test("request bodies preserve Unicode at every network chunk boundary", async () => {
+  const payload = { messages: [{ role: "user", content: "日本語の修正 🎉 café" }] };
+  const bytes = Buffer.from(JSON.stringify(payload));
+
+  for (let split = 1; split < bytes.length; split++) {
+    const req = new EventEmitter();
+    const result = parseBody(req);
+    req.emit("data", bytes.subarray(0, split));
+    req.emit("data", bytes.subarray(split));
+    req.emit("end");
+    assert.deepEqual(await result, payload, `split at byte ${split}`);
+  }
+
+  const req = new EventEmitter();
+  const result = parseBody(req);
+  for (const byte of bytes) req.emit("data", Buffer.from([byte]));
+  req.emit("end");
+  assert.deepEqual(await result, payload);
+});
+
+test("request bodies retain empty-body handling and invalid JSON rejection", async () => {
+  for (const body of ["", " \n\t"]) {
+    const req = new EventEmitter();
+    const result = parseBody(req);
+    req.emit("data", Buffer.from(body));
+    req.emit("end");
+    assert.deepEqual(await result, {});
+  }
+
+  const req = new EventEmitter();
+  const result = parseBody(req);
+  req.emit("data", Buffer.from('{"unfinished":'));
+  req.emit("end");
+  await assert.rejects(result, (error) => error instanceof HttpError && error.statusCode === 400);
+});
+
+test("request body limits count UTF-8 bytes and ignore data after rejection", async () => {
+  const req = new EventEmitter();
+  const result = parseBody(req);
+  const body = JSON.stringify("日".repeat(Math.floor(runtimeConfig.execution.maxBodyBytes / 3) + 1));
+  req.emit("data", Buffer.from(body));
+  req.emit("data", Buffer.from("{}"));
+  req.emit("end");
+  await assert.rejects(result, (error) => error instanceof HttpError && error.statusCode === 413);
+});
 
 test("routing aliases are not forwarded as CLI model names", () => {
   assert.deepEqual(parseAgentSelection("codex", "codex"), {

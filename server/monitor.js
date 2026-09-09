@@ -226,10 +226,11 @@ export async function getWorkspaceStatus(workspacePath) {
 }
 
 export async function getMonitorData(workspacePath) {
-  const [llm, workspace, execution] = await Promise.all([
+  const [llm, workspace, execution, stats] = await Promise.all([
     getLLMStatus(),
     getWorkspaceStatus(workspacePath),
     Promise.resolve(getExecutionState()),
+    import("./stats.js").then((m) => m.getBridgeStats()),
   ]);
 
   return {
@@ -237,5 +238,6 @@ export async function getMonitorData(workspacePath) {
     llm,
     workspace,
     execution,
+    stats,
   };
 }
