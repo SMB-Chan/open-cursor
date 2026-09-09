@@ -2,14 +2,16 @@
 
 Open-Cursor is a local multi-agent bridge for Cursor/VS Code-style workflows. It connects subscription-authenticated coding CLIs to a local OpenAI-compatible endpoint and coordinates them as distinct planning, implementation, and review roles.
 
-Current backends:
+Current backends and orchestration paths:
 
-- **Codex CLI** — implementation/refinement using ChatGPT subscription authentication
-- **Antigravity CLI** — analysis/planning/review using Gemini AI Pro subscription mode
-- **Pipeline** — Plan → Implement
-- **Collaborative** — Plan → Implement → Review → Refine
+- **Codex CLI** — workspace-writing implementation/refinement using ChatGPT authentication
+- **Antigravity CLI** — Gemini analysis/planning/review, plus an explicitly selected write-capable Autonomous mode
+- **Xiaomi MiMo** — optional remote, API-key/token-plan-backed **read-only** solution drafting
+- **Auto** — side-effect-aware routing that never substitutes a read-only provider for a workspace writer
+- **Pipeline** — Gemini Plan → Codex Implement
+- **Collaborative** — Gemini Plan → Codex Implement → Gemini Review → Codex Refine
 
-> Open-Cursor itself does not require a per-call billing API, but upstream CLI availability, authentication methods, quotas, and subscription terms can change. Verify each CLI's active authentication/billing mode before use.
+> The local Open-Cursor bridge does not add its own usage charge. Provider billing/authentication is per-agent: Codex and Antigravity may use subscription-backed authentication, while the optional MiMo integration uses an external API key/token plan. Verify the active provider configuration before use.
 
 ## Architecture
 
@@ -28,7 +30,9 @@ Open-Cursor HTTP bridge
     ├── timeout / output limits
     └── execution engine
           ├── Codex        → actual workspace, write-capable
-          └── Antigravity  → detached temporary working directory for automatic planning/review
+          ├── Antigravity  → detached temporary directory for automatic planning/review
+          │                  (actual workspace only for explicitly selected write modes)
+          └── MiMo         → remote response-only provider, no workspace access
 ```
 
 The HTTP layer lives in `server/index.js`, execution/orchestration in `server/engine.js`, bounded repository context generation in `server/context.js`, and runtime configuration loading in `server/config.js`.
@@ -77,10 +81,11 @@ These are defense-in-depth controls, not a guarantee that arbitrary secrets can 
 - Linux
 - Node.js 18 or newer
 - Cursor
-- at least one supported agent CLI:
+- at least one supported local agent CLI:
   - `codex`
   - `agy` / Antigravity CLI
 - authentication already completed for the CLI you intend to use
+- optional: a configured MiMo API key/token-plan credential if you explicitly use MiMo or allow read-only Auto fallback to it
 
 The launcher/install scripts also account for common GUI-session PATH differences, including user-local binaries and typical NVM installations.
 
@@ -136,14 +141,18 @@ Legacy shell-managed bridge stop:
 
 ## Routing modes
 
-| Mode | Behavior |
-| --- | --- |
-| `collaborative` | Gemini Plan → Codex Implement → Gemini Review → Codex Refine |
-| `pipeline` | Gemini Plan → Codex Implement |
-| `codex` | Codex only |
-| `antigravity` | Antigravity only |
+| Mode | Behavior | Workspace effect |
+| --- | --- | --- |
+| `auto` | Classify intent and choose only a capability-compatible route | Depends on task; write tasks require Codex |
+| `collaborative` | Gemini Plan → Codex Implement → Gemini Review → Codex Refine | Writes through Codex |
+| `pipeline` | Gemini Plan → Codex Implement | Writes through Codex |
+| `codex` | Codex only | Write-capable |
+| `antigravity` | Explicit Antigravity route | Write-capable by explicit selection |
+| `autonomous` | Explicit Antigravity auto-approved edits/commands | **Write-capable; high trust required** |
+| `mimo` | Xiaomi MiMo response/solution draft | Read-only; no workspace access |
+| `mimo-gemini` | Gemini plan/review + MiMo solution draft | Read-only; no workspace implementation |
 
-Automatic routing recognizes common English and Japanese analysis/implementation/continuation terms. Explicit routing takes precedence.
+Automatic routing recognizes common English and Japanese analysis, implementation, verification, and continuation terms. Explicit routing takes precedence. Auto treats side effects as a hard capability constraint: an implementation request is never reported as completed through MiMo, and a failed/partially completed writer run is never silently retried as a response-only success.
 
 Namespaced models are supported:
 
@@ -206,6 +215,11 @@ BRIDGE_CONTEXT_FILE_BYTES
 BRIDGE_DIFF_MAX_BYTES
 CODEX_BIN
 AGY_BIN
+CODEX_ENABLED
+AGY_ENABLED
+MIMO_ENABLED
+MIMO_ENDPOINT
+MIMO_MODEL
 ```
 
 The extension-managed bridge intentionally supplies its configured `BRIDGE_PORT` and safe loopback `BRIDGE_HOST`, so those names appear as runtime overrides when the extension starts the process.
@@ -223,7 +237,7 @@ Several properties are validated as invariants rather than freely configurable k
 - collaborative order remains Plan → Implement → Review → Refine
 - loopback/browser-origin/concurrent-writer protection declarations remain fixed in the schema
 
-`agents.codex.enabled` and `agents.antigravity.enabled` control model advertisement and routing availability. A request needing a disabled agent fails before the execution phase begins.
+`agents.codex.enabled`, `agents.antigravity.enabled`, and `agents.mimo.enabled` control model advertisement and routing availability. MiMo is additionally constrained to `workspaceAccess: "none"` by runtime validation. A request needing a disabled agent fails before execution begins.
 
 ## Execution guardrails
 

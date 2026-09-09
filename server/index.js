@@ -95,6 +95,9 @@ function parseAgentSelection(modelName, headerMode) {
 function requiredAgentsForMode(mode) {
   if (mode === "codex") return ["codex"];
   if (mode === "antigravity") return ["antigravity"];
+  if (mode === "autonomous") return ["antigravity"];
+  if (mode === "mimo") return ["mimo"];
+  if (mode === "mimo-gemini") return ["mimo", "antigravity"];
   if (mode === "pipeline" || mode === "collaborative") return ["codex", "antigravity"];
   return [];
 }
@@ -398,7 +401,7 @@ async function handleChat(req, res) {
 }
 
 async function agentStatus(key) {
-  const configured = runtimeConfig.agents[key] || { enabled: true };
+  const configured = runtimeConfig.agents[key] || { enabled: false, strengths: [] };
   const authenticated = configured.enabled ? await AGENTS[key]?.authCheck() : false;
   return {
     enabled: configured.enabled,
@@ -424,7 +427,7 @@ async function handleModels(req, res) {
       id: "autonomous",
       object: "model",
       owned_by: "bridge",
-      description: "Autonomous Agent (自律実行: 手動承認なしでファイルの読み書き・コマンド実行・検証を全自動完遂)",
+      description: "Autonomous Agent (explicit write mode: auto-approved file edits and commands)",
     },
   ];
 
@@ -433,7 +436,7 @@ async function handleModels(req, res) {
       id: "mimo-gemini",
       object: "model",
       owned_by: "bridge",
-      description: "MiMo + Gemini (協調モード: Gemini 計画/レビュー + MiMo 実装)",
+      description: "MiMo + Gemini (read-only: Gemini plan/review + MiMo solution draft)",
     });
   }
 
@@ -460,7 +463,7 @@ async function handleModels(req, res) {
         id: "mimo",
         object: "model",
         owned_by: "xiaomi",
-        description: "Xiaomi MiMo (mimo-v2.5-pro)",
+        description: "Xiaomi MiMo read-only response (mimo-v2.5-pro)",
       },
       {
         id: "mimo/mimo-v2.5-pro",
@@ -514,13 +517,16 @@ async function handleAgents(req, res) {
       enabled: status.enabled,
       authenticated: status.authenticated,
       available: status.available,
-      strengths: runtimeConfig.agents[key].strengths,
+      strengths: runtimeConfig.agents[key]?.strengths || agent.strengths,
+      auth_mode: runtimeConfig.agents[key]?.authMode || "unknown",
+      billing: runtimeConfig.agents[key]?.billing || "unknown",
+      workspace_access: runtimeConfig.agents[key]?.workspaceAccess || (key === "mimo" ? "none" : "agent-controlled"),
     };
   }
   sendJSON(res, 200, {
     agents,
-    billing: "NONE",
-    auth: "subscription-only",
+    billing: "per-agent",
+    auth: "per-agent",
     execution: {
       active: activeExecutionCount(),
       ...executionConfig(),
@@ -540,7 +546,7 @@ async function handleHealth(req, res) {
     status: "ok",
     bridge: "open-cursor-multi-agent",
     version: VERSION,
-    billing: "NONE",
+    billing: "per-agent",
     execution: {
       active: activeExecutionCount(),
       ...executionConfig(),
@@ -630,7 +636,7 @@ function startServer() {
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║           Open-Cursor Multi-Agent Bridge v${VERSION.padEnd(18)}║
-║            local · subscription-authenticated               ║
+║           local · per-agent authenticated                  ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Endpoint : http://${HOST}:${PORT}
 ║  MiMo     : ${mimo.available ? "READY" : mimo.enabled ? "NOT CONFIGURED" : "DISABLED"}
