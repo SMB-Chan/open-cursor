@@ -230,13 +230,50 @@
         },
         "rules": {
           "type": "object",
-          "additionalProperties": {
-            "enum": [
-              "collaborative",
-              "pipeline",
-              "codex",
-              "antigravity"
-            ]
+          "additionalProperties": false,
+          "required": [
+            "analysis",
+            "general",
+            "implementation",
+            "complex-multi-step"
+          ],
+          "properties": {
+            "analysis": {
+              "enum": [
+                "antigravity",
+                "mimo-gemini",
+                "mimo",
+                "codex"
+              ],
+              "description": "Auto route for read-only analysis tasks. Restricted to read-only providers or Codex."
+            },
+            "general": {
+              "enum": [
+                "antigravity",
+                "mimo-gemini",
+                "mimo",
+                "codex"
+              ],
+              "description": "Auto route for general read-only tasks."
+            },
+            "implementation": {
+              "enum": [
+                "codex",
+                "collaborative",
+                "pipeline",
+                "antigravity"
+              ],
+              "description": "Auto route for implementation tasks. Invariant: must remain a workspace-writing mode; response-only providers are rejected."
+            },
+            "complex-multi-step": {
+              "enum": [
+                "codex",
+                "collaborative",
+                "pipeline",
+                "antigravity"
+              ],
+              "description": "Auto route for implementation plus verification/continuation tasks. Invariant: must remain a workspace-writing mode."
+            }
           }
         },
         "languages": {

@@ -25,7 +25,7 @@ import {
   parseReviewVerdict,
 } from "./verdict.js";
 
-const VERSION = "2.7.0";
+const VERSION = "2.8.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");
@@ -1367,7 +1367,47 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent, maxRevie
   }
 }
 
-function analyzeTask(prompt) {
+// Response-only providers must never be selected for workspace-writing tasks,
+// regardless of what any configuration said (config validation already rejects
+// them; this is the engine-level defense behind that invariant).
+const READ_ONLY_MODES = new Set(["mimo", "mimo-gemini"]);
+const WRITE_CAPABLE_FALLBACKS = {
+  collaborative: ["collaborative", "codex"],
+  pipeline: ["pipeline", "codex"],
+  codex: ["codex"],
+  antigravity: ["antigravity", "codex"],
+};
+
+// Read-only fallback order per preferred mode. Each chain starts with the
+// configured preference, then degrades through capability-preserving
+// alternatives before using a writer as the last resort.
+const READ_ONLY_FALLBACKS = {
+  antigravity: ["antigravity", "mimo", "codex"],
+  "mimo-gemini": ["mimo-gemini", "antigravity", "mimo", "codex"],
+  mimo: ["mimo", "antigravity", "codex"],
+  codex: ["codex", "antigravity", "mimo"],
+};
+
+function routingRulesFromEnv() {
+  const rule = (name, fallback, allowed) => {
+    const raw = process.env[name];
+    if (raw === undefined || raw === "") return fallback;
+    const normalized = String(raw).trim().toLowerCase();
+    return allowed.includes(normalized) ? normalized : fallback;
+  };
+  return {
+    analysis: rule("BRIDGE_ROUTING_RULE_ANALYSIS", "antigravity", ["antigravity", "mimo-gemini", "mimo", "codex"]),
+    general: rule("BRIDGE_ROUTING_RULE_GENERAL", "antigravity", ["antigravity", "mimo-gemini", "mimo", "codex"]),
+    implementation: rule("BRIDGE_ROUTING_RULE_IMPLEMENTATION", "codex", ["codex", "collaborative", "pipeline", "antigravity"]),
+    complexMultiStep: rule("BRIDGE_ROUTING_RULE_COMPLEX_MULTI_STEP", "collaborative", ["codex", "collaborative", "pipeline", "antigravity"]),
+  };
+}
+
+function writeSafeRoutingRule(mode, fallback) {
+  return READ_ONLY_MODES.has(mode) ? fallback : mode;
+}
+
+function analyzeTask(prompt, rules = routingRulesFromEnv()) {
   const p = prompt.toLowerCase();
   const hasAnalysis =
     /\b(analyze|research|explain|review|audit|compare|survey|study|evaluate|investigate|inspect|verify)\b/.test(p) ||
@@ -1382,36 +1422,72 @@ function analyzeTask(prompt) {
 
   if (hasImplementation && (hasAnalysis || hasContinuation)) {
     return {
-      routing: "collaborative",
+      routing: writeSafeRoutingRule(rules.complexMultiStep, "collaborative"),
       reason: "implementation + verification/continuation task",
       kind: "complex-write",
       requiresWorkspaceWrite: true,
     };
   }
   if (hasImplementation) {
-    return { routing: "codex", reason: "implementation task", kind: "write", requiresWorkspaceWrite: true };
+    return {
+      routing: writeSafeRoutingRule(rules.implementation, "codex"),
+      reason: "implementation task",
+      kind: "write",
+      requiresWorkspaceWrite: true,
+    };
   }
   if (hasContinuation) {
-    return { routing: "collaborative", reason: "complex multi-step task", kind: "complex-write", requiresWorkspaceWrite: true };
+    return {
+      routing: writeSafeRoutingRule(rules.complexMultiStep, "collaborative"),
+      reason: "complex multi-step task",
+      kind: "complex-write",
+      requiresWorkspaceWrite: true,
+    };
   }
   if (hasAnalysis) {
-    return { routing: "antigravity", reason: "analysis task", kind: "analysis", requiresWorkspaceWrite: false };
+    return { routing: rules.analysis, reason: "analysis task", kind: "analysis", requiresWorkspaceWrite: false };
   }
-  return { routing: "antigravity", reason: "general read-only task", kind: "general", requiresWorkspaceWrite: false };
+  return { routing: rules.general, reason: "general read-only task", kind: "general", requiresWorkspaceWrite: false };
+}
+
+function modeAvailabilitySatisfied(mode, availability) {
+  const { codex = false, antigravity = false, mimo = false } = availability || {};
+  switch (mode) {
+    case "collaborative":
+    case "pipeline":
+      return codex && antigravity;
+    case "codex":
+      return codex;
+    case "antigravity":
+      return antigravity;
+    case "mimo":
+      return mimo;
+    case "mimo-gemini":
+      return antigravity && mimo;
+    default:
+      // autonomous and anything unknown are explicit-selection only.
+      return false;
+  }
 }
 
 function selectAutoMode(taskType, availability) {
-  const { codex = false, antigravity = false, mimo = false } = availability || {};
-
   if (taskType.requiresWorkspaceWrite) {
-    if (taskType.routing === "collaborative" && codex && antigravity) return "collaborative";
-    if (codex) return "codex";
-    throw new HttpError(503, "Auto routing requires a workspace-writing Codex agent for this task");
+    // A response-only provider can never complete a write task: force a
+    // workspace-writing chain even if misconfiguration slipped through.
+    const preferred = READ_ONLY_MODES.has(taskType.routing)
+      ? "collaborative"
+      : taskType.routing;
+    const chain = WRITE_CAPABLE_FALLBACKS[preferred] || WRITE_CAPABLE_FALLBACKS.codex;
+    for (const mode of chain) {
+      if (modeAvailabilitySatisfied(mode, availability)) return mode;
+    }
+    throw new HttpError(503, "Auto routing requires a workspace-writing agent for this task");
   }
 
-  if (antigravity) return "antigravity";
-  if (mimo) return "mimo";
-  if (codex) return "codex";
+  const chain = READ_ONLY_FALLBACKS[taskType.routing] || READ_ONLY_FALLBACKS.antigravity;
+  for (const mode of chain) {
+    if (modeAvailabilitySatisfied(mode, availability)) return mode;
+  }
   throw new HttpError(503, "No available agent can safely handle this read-only task");
 }
 

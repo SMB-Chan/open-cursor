@@ -6,6 +6,17 @@ import { fileURLToPath } from "node:url";
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_PATH = resolve(SERVER_DIR, "../config/bridge.json");
 
+// Auto-routing rule targets per task kind. Write-task kinds are restricted to
+// workspace-writing modes: a response-only provider (mimo, mimo-gemini) can
+// never be configured for them, so the side-effect invariant cannot be
+// weakened through configuration.
+const ROUTING_RULE_MODES = {
+  analysis: ["antigravity", "mimo-gemini", "mimo", "codex"],
+  general: ["antigravity", "mimo-gemini", "mimo", "codex"],
+  implementation: ["codex", "collaborative", "pipeline", "antigravity"],
+  "complex-multi-step": ["codex", "collaborative", "pipeline", "antigravity"],
+};
+
 class RuntimeConfigError extends Error {
   constructor(message) {
     super(message);
@@ -164,6 +175,18 @@ function validateRawConfig(raw) {
     throw new RuntimeConfigError("routing.default is invalid");
   }
 
+  const rules = routing.rules || {};
+  for (const [key, allowed] of Object.entries(ROUTING_RULE_MODES)) {
+    if (!allowed.includes(rules[key])) {
+      throw new RuntimeConfigError(`routing.rules.${key} must be one of: ${allowed.join(", ")}`);
+    }
+  }
+  for (const key of Object.keys(rules)) {
+    if (!(key in ROUTING_RULE_MODES)) {
+      throw new RuntimeConfigError(`routing.rules.${key} is not a recognized rule key`);
+    }
+  }
+
   return raw;
 }
 
@@ -284,6 +307,26 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
 
   // Built before the frozen result so environment-override bookkeeping for the
   // review-loop bound is recorded in the same overrides list as every other knob.
+  const routingRule = (envName, key) => {
+    const value = envString(env, envName, raw.routing.rules[key], overrides);
+    if (!ROUTING_RULE_MODES[key].includes(value)) {
+      throw new RuntimeConfigError(`${envName} must be one of: ${ROUTING_RULE_MODES[key].join(", ")}`);
+    }
+    return value;
+  };
+  const routing = {
+    default: raw.routing.default,
+    rules: Object.freeze({
+      analysis: routingRule("BRIDGE_ROUTING_RULE_ANALYSIS", "analysis"),
+      general: routingRule("BRIDGE_ROUTING_RULE_GENERAL", "general"),
+      implementation: routingRule("BRIDGE_ROUTING_RULE_IMPLEMENTATION", "implementation"),
+      "complex-multi-step": routingRule("BRIDGE_ROUTING_RULE_COMPLEX_MULTI_STEP", "complex-multi-step"),
+    }),
+    languages: Object.freeze([...(raw.routing.languages || [])]),
+  };
+
+  // Built before the frozen result so environment-override bookkeeping for the
+  // review-loop bound is recorded in the same overrides list as every other knob.
   const collaboration = {
     pipeline: Object.freeze([...raw.collaboration.pipeline]),
     collaborative: Object.freeze([...raw.collaboration.collaborative]),
@@ -311,11 +354,7 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
       antigravity: Object.freeze({ ...raw.agents.antigravity, binary: antigravityBinary }),
       mimo: Object.freeze(mimo),
     }),
-    routing: Object.freeze({
-      default: raw.routing.default,
-      rules: Object.freeze({ ...raw.routing.rules }),
-      languages: Object.freeze([...(raw.routing.languages || [])]),
-    }),
+    routing: Object.freeze(routing),
   });
 }
 
@@ -329,6 +368,10 @@ function applyRuntimeDefaultsToEnv(config, env = process.env) {
     BRIDGE_MAX_BODY_BYTES: config.execution.maxBodyBytes,
     BRIDGE_MAX_OUTPUT_BYTES: config.execution.maxOutputBytes,
     BRIDGE_REVIEWER_SANDBOX: config.execution.reviewerSandbox,
+    BRIDGE_ROUTING_RULE_ANALYSIS: config.routing.rules.analysis,
+    BRIDGE_ROUTING_RULE_GENERAL: config.routing.rules.general,
+    BRIDGE_ROUTING_RULE_IMPLEMENTATION: config.routing.rules.implementation,
+    BRIDGE_ROUTING_RULE_COMPLEX_MULTI_STEP: config.routing.rules["complex-multi-step"],
     BRIDGE_CONTEXT_MAX_FILES: config.context.maxFiles,
     BRIDGE_CONTEXT_MAX_BYTES: config.context.maxBytes,
     BRIDGE_CONTEXT_FILE_BYTES: config.context.maxFileBytes,
