@@ -9,7 +9,7 @@ const { execSync } = require("node:child_process");
 
 const BRIDGE_URL = process.env.BRIDGE_URL || "http://127.0.0.1:9876";
 const STATE_FILE = path.join(os.homedir(), ".cursor-codex-bridge", "run", "execution-state.json");
-const REFRESH_INTERVAL_MS = 1500;
+const REFRESH_INTERVAL_MS = 1000;
 
 // ANSI Colors
 const RESET = "\x1b[0m";
@@ -23,6 +23,28 @@ const MAGENTA = "\x1b[35m";
 const RED = "\x1b[31m";
 const BG_BLUE = "\x1b[44m";
 const CLEAR_SCREEN = "\x1b[2J\x1b[H";
+
+// Braille spinner frames for live terminal animation
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+function renderLogo(termWidth) {
+  const logo = [
+    "   ___                   ___                            ",
+    "  / _ \\ _ __  ___ _ _   / __|  _ _ _ ___ ___  _ _       ",
+    " | (_) | '_ \\/ -_) ' \\ | (__  | '_| (_-</ _ \\/ '_|      ",
+    "  \\___/| .__/\\___|_||_| \\___| |_| |_/__/\\___/|_|        ",
+    "       |_| ⚡ Multi-Agent Coding Bridge · v2.4.0        "
+  ];
+  const colors = [CYAN, CYAN, BLUE, MAGENTA, MAGENTA];
+  return logo.map((line, idx) => colors[idx] + BOLD + line + RESET).join("\n") + "\n";
+}
+
+function renderLogoHeader(termRows, termWidth) {
+  if (termRows && termRows < 24) {
+    return `${CYAN}${BOLD} ✦ OPEN-CURSOR${RESET} · ${MAGENTA}Multi-Agent Autonomous Coding Bridge v2.4.0${RESET} ${DIM}[Codex · Gemini · MiMo]${RESET}\n`;
+  }
+  return renderLogo(termWidth);
+}
 
 function fetchMonitorData(targetWorkspace) {
   return new Promise((resolvePromise) => {
@@ -103,15 +125,24 @@ function loadLocalFallback(targetWorkspace) {
   } catch {}
 
   let usageData = null;
-  try {
-    const usageOut = execSync("usage --json", { timeout: 2000, stdio: ["pipe", "pipe", "ignore"] }).toString();
-    usageData = JSON.parse(usageOut);
-  } catch {
+  const now = Date.now();
+  if (cachedFallbackUsage && now - lastFallbackUsageFetch < FALLBACK_CACHE_TTL_MS) {
+    usageData = cachedFallbackUsage;
+  } else {
     try {
-      const usageBin = path.join(__dirname, "usage");
-      const usageOut = execSync(`node "${usageBin}" --json`, { timeout: 2000, stdio: ["pipe", "pipe", "ignore"] }).toString();
+      const usageOut = execSync("usage --json", { timeout: 2000, stdio: ["pipe", "pipe", "ignore"] }).toString();
       usageData = JSON.parse(usageOut);
-    } catch {}
+      cachedFallbackUsage = usageData;
+      lastFallbackUsageFetch = now;
+    } catch {
+      try {
+        const usageBin = path.join(__dirname, "usage");
+        const usageOut = execSync(`node "${usageBin}" --json`, { timeout: 2000, stdio: ["pipe", "pipe", "ignore"] }).toString();
+        usageData = JSON.parse(usageOut);
+        cachedFallbackUsage = usageData;
+        lastFallbackUsageFetch = now;
+      } catch {}
+    }
   }
 
   const cUsage = usageData?.codex;
@@ -182,9 +213,9 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function renderScreen(data) {
+function renderScreen(data, frame = 1, latencyMs = 0) {
   const termWidth = Math.max(70, Math.min(100, (process.stdout.columns || 80) - 2));
-  const hr = "─".repeat(termWidth);
+  const termRows = process.stdout.rows || 30;
   const boxTop = `╔${"═".repeat(termWidth)}╗`;
   const boxBottom = `╚${"═".repeat(termWidth)}╝`;
   const boxMid = `╠${"═".repeat(termWidth)}╣`;
@@ -194,11 +225,27 @@ function renderScreen(data) {
   const llm = data.llm || {};
   const nowStr = new Date().toLocaleTimeString("ja-JP");
 
+  const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+  const pulseDot = frame % 2 === 0 ? `${GREEN}●${RESET}` : `${CYAN}◉${RESET}`;
+  const latencyStr = latencyMs !== undefined ? `${latencyMs}ms` : "ok";
+
   let out = CLEAR_SCREEN;
 
+  // 0. Original ASCII Logo Banner
+  out += renderLogoHeader(termRows, termWidth);
+
+  // Monitor Box Header
   out += `${CYAN}${BOLD}${boxTop}${RESET}\n`;
-  out += `${CYAN}${BOLD}║  🚀 Open-Cursor Multi-Agent Live Monitor              ${DIM}${nowStr.padStart(termWidth - 42)}${RESET}${CYAN}${BOLD}  ║${RESET}\n`;
-  out += `${CYAN}${BOLD}║  📁 作業ディレクトリ: ${YELLOW}${ws.workspacePath ? (ws.workspacePath.length > termWidth - 25 ? "..." + ws.workspacePath.slice(-(termWidth - 28)) : ws.workspacePath) : "未指定"}${RESET}${CYAN}${BOLD}  ${(ws.isGitRepo ? `[Git: ${ws.gitBranch || "main"}]` : "[Non-Git]").padStart(15)}║${RESET}\n`;
+  const liveTag = `${pulseDot} ${BOLD}LIVE${RESET} ${DIM}[${spinner} 1.0s · #${frame} · ${latencyStr}]${RESET}`;
+  const titlePlain = `  🚀 Open-Cursor Live Monitor  [LIVE] [1.0s · #${frame} · ${latencyStr}]`;
+  const padLen = Math.max(2, termWidth - titlePlain.length - nowStr.length - 2);
+  out += `${CYAN}${BOLD}║${RESET}  🚀 ${BOLD}Open-Cursor Live Monitor${RESET}  ${liveTag}${" ".repeat(padLen)}${DIM}${nowStr}${RESET}${CYAN}${BOLD}  ║${RESET}\n`;
+  
+  const gitPlain = ws.isGitRepo ? `[Git: ${ws.gitBranch || "main"}]` : "[Non-Git]";
+  const maxPathLen = Math.max(10, termWidth - gitPlain.length - 28);
+  const displayPath = ws.workspacePath ? (ws.workspacePath.length > maxPathLen ? "..." + ws.workspacePath.slice(-(maxPathLen - 3)) : ws.workspacePath) : "未指定";
+  const pathPadLen = Math.max(2, termWidth - displayPath.length - gitPlain.length - 26);
+  out += `${CYAN}${BOLD}║${RESET}  📁 作業ディレクトリ: ${YELLOW}${displayPath}${RESET}${" ".repeat(pathPadLen)}${CYAN}${BOLD}${gitPlain}${RESET}${CYAN}${BOLD}  ║${RESET}\n`;
   out += `${CYAN}${BOLD}${boxMid}${RESET}\n`;
 
   // 1. LLM Status Section
@@ -223,19 +270,19 @@ function renderScreen(data) {
   if (exec.active) {
     const bar = renderBar(exec.progress || (10 + (exec.step || 1) * 6));
     const modeName = exec.autoMode ? `自動判別 (Auto) ➔ ${exec.selectedMode || exec.mode}` : (exec.mode || "自律");
-    out += `  ${MAGENTA}${BOLD}▶ 実行中 [${modeName}]${RESET}  進捗: ${CYAN}${BOLD}${bar}${RESET}\n`;
+    out += `  ${MAGENTA}${BOLD}${spinner} 実行中 [${modeName}]${RESET}  進捗: ${CYAN}${BOLD}${bar}${RESET}\n`;
     if (exec.modelId) {
       out += `  稼働モデルID  : ${CYAN}${BOLD}🎯 ${exec.modelId}${RESET} ${DIM}(${exec.modelDisplayName || exec.agent || ""})${RESET}\n`;
     }
     if (Array.isArray(exec.activeModels) && exec.activeModels.length > 1) {
       out += `  協調モデル構成: ${DIM}${exec.activeModels.join(" ➔ ")}${RESET}\n`;
     }
-    out += `  現在アクション: ${BOLD}${exec.currentAction || "処理中..."}${RESET}\n`;
+    out += `  現在アクション: ${BOLD}${exec.currentAction || "処理中..."}${RESET} ${DIM}(ステップ ${exec.step || 1})${RESET}\n`;
     if (exec.targetFile) {
       out += `  操作ファイル  : ${YELLOW}${BOLD}📄 ${exec.targetFile}${RESET}\n`;
     }
   } else {
-    out += `  ${DIM}○ アイドル待機中 (直近の自律処理は完了しています)${RESET}\n`;
+    out += `  ${GREEN}${spinner}${RESET} ${DIM}アイドル待機中 (常時ヘルスチェック稼働・リクエスト待機中)${RESET}\n`;
     if (exec.modelId) {
       out += `  最終稼働モデル: ${DIM}🎯 ${exec.modelId} (${exec.modelDisplayName || exec.agent || ""})${RESET}\n`;
     }
@@ -275,7 +322,7 @@ function renderScreen(data) {
   }
 
   out += `${CYAN}${BOLD}${boxBottom}${RESET}\n`;
-  out += ` ${DIM}[r] 更新  [b] モバイル画面開く (9880)  [q] 終了${RESET}\n`;
+  out += ` ${CYAN}${spinner}${RESET} ${DIM}[r] 手動更新  [b] モバイル画面 (9880)  [q] 終了  |  更新回数: #${frame}${RESET}\n`;
 
   process.stdout.write(out);
 }
@@ -283,14 +330,30 @@ function renderScreen(data) {
 const nonFlagArgs = process.argv.slice(2).filter((a) => !a.startsWith("-"));
 let activeWorkspace = nonFlagArgs[0] ? path.resolve(nonFlagArgs[0]) : (process.env.OPEN_CURSOR_WORKSPACE || process.cwd());
 
+let frameIndex = 0;
+let isTicking = false;
+let timer = null;
+
 async function loop() {
-  let data = await fetchMonitorData(activeWorkspace);
-  if (!data) {
-    data = loadLocalFallback(activeWorkspace);
-  }
-  renderScreen(data);
-  if (process.argv.includes("--once")) {
-    process.exit(0);
+  if (isTicking) return;
+  isTicking = true;
+  frameIndex++;
+  const start = Date.now();
+  try {
+    let data = await fetchMonitorData(activeWorkspace);
+    if (!data) {
+      data = loadLocalFallback(activeWorkspace);
+    }
+    const latencyMs = Date.now() - start;
+    renderScreen(data, frameIndex, latencyMs);
+  } catch {
+  } finally {
+    isTicking = false;
+    if (process.argv.includes("--once")) {
+      process.exit(0);
+    } else {
+      timer = setTimeout(loop, REFRESH_INTERVAL_MS);
+    }
   }
 }
 
@@ -301,9 +364,11 @@ if (process.stdin.isTTY) {
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (key) => {
     if (key === "q" || key === "\u0003") { // q or Ctrl+C
+      if (timer) clearTimeout(timer);
       process.stdout.write("\n" + RESET);
       process.exit(0);
     } else if (key === "r") {
+      if (timer) clearTimeout(timer);
       loop();
     } else if (key === "b") {
       try {
@@ -316,15 +381,14 @@ if (process.stdin.isTTY) {
 
 // Initial draw and timer
 loop();
-const timer = setInterval(loop, REFRESH_INTERVAL_MS);
 
 process.on("SIGINT", () => {
-  clearInterval(timer);
+  if (timer) clearTimeout(timer);
   process.stdout.write("\n" + RESET);
   process.exit(0);
 });
 process.on("SIGTERM", () => {
-  clearInterval(timer);
+  if (timer) clearTimeout(timer);
   process.stdout.write("\n" + RESET);
   process.exit(0);
 });

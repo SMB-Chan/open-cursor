@@ -70,14 +70,31 @@ export async function loadState() {
   return inMemoryState;
 }
 
-export async function fetchUsageData() {
+let cachedUsage = null;
+let lastUsageFetch = 0;
+const USAGE_CACHE_TTL_MS = 4000;
+
+export function resetUsageCache() {
+  cachedUsage = null;
+  lastUsageFetch = 0;
+}
+
+export async function fetchUsageData(forceFresh = false) {
+  const now = Date.now();
+  if (!forceFresh && cachedUsage && now - lastUsageFetch < USAGE_CACHE_TTL_MS) {
+    return cachedUsage;
+  }
   const usageCmd = process.env.OPEN_CURSOR_USAGE_CMD || "usage --json";
   try {
     const { stdout } = await execAsync(usageCmd, { timeout: 3000 });
     const parsed = JSON.parse(stdout);
-    if (parsed && typeof parsed === "object") return parsed;
+    if (parsed && typeof parsed === "object") {
+      cachedUsage = parsed;
+      lastUsageFetch = now;
+      return parsed;
+    }
   } catch {}
-  return null;
+  return cachedUsage || null;
 }
 
 export async function getLLMStatus() {
