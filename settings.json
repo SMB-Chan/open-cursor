@@ -1,0 +1,31 @@
+{
+  "window.autoDetectColorScheme": true,
+  "window.title": "${activeEditorShort}${separator}Cursor Open Providers",
+  "workbench.startupEditor": "none",
+  "workbench.activityBar.location": "default",
+  "workbench.agentsWindowButton.enabled": false,
+  "workbench.tips.enabled": false,
+  "workbench.enableExperiments": false,
+  "workbench.settings.enableNaturalLanguageSearch": false,
+  "workbench.commandPalette.experimental.enableNaturalLanguageSearch": false,
+  "telemetry.telemetryLevel": "off",
+  "cursor.general.privacyMode": true,
+  "cursor.general.enableShadowWorkspace": false,
+  "cursor.terminal.enableAiChecks": false,
+  "editor.inlineSuggest.enabled": true,
+  "continue.enableTabAutocomplete": false,
+  "continue.enableNextEdit": false,
+  "continue.telemetryEnabled": false,
+  "terminal.integrated.defaultLocation": "view",
+  "terminal.integrated.defaultProfile.linux": "bash",
+  "terminal.integrated.profiles.linux": {
+    "bash": { "path": "/bin/bash", "args": ["-l"] }
+  },
+  "terminal.integrated.fontSize": 14,
+  "terminal.integrated.scrollback": 20000,
+  "terminal.integrated.enablePersistentSessions": true,
+  "terminal.integrated.confirmOnKill": "hasChildProcesses",
+  "extensions.ignoreRecommendations": true,
+  "extensions.autoCheckUpdates": false,
+  "extensions.autoUpdate": false
+}

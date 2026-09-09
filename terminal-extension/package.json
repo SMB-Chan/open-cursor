@@ -1,0 +1,21 @@
+{
+  "name": "open-provider-workspace",
+  "displayName": "Open Provider Workspace",
+  "description": "Continue coding assistant and a local shell in classic Cursor.",
+  "version": "1.0.0",
+  "publisher": "local",
+  "engines": { "vscode": "^1.93.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "localTerminal.focus", "title": "Local Terminal: Focus" },
+      { "command": "localTerminal.new", "title": "Local Terminal: New Terminal" },
+      { "command": "openProviders.configure", "title": "Open Providers: Configure Models" }
+    ],
+    "keybindings": [
+      { "key": "ctrl+shift+t", "command": "localTerminal.new" },
+      { "key": "ctrl+shift+j", "command": "localTerminal.focus" }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+[
+  { "key": "ctrl+shift+t", "command": "localTerminal.new" },
+  { "key": "ctrl+shift+j", "command": "localTerminal.focus" },
+  { "key": "ctrl+k", "command": "workbench.action.terminal.clear", "when": "terminalFocus" },
+  { "key": "ctrl+l", "command": "continue.focusContinueInput", "when": "!terminalFocus" },
+  { "key": "ctrl+i", "command": "continue.focusEdit", "when": "editorTextFocus" },
+  { "key": "ctrl+l", "command": "workbench.action.terminal.sendSequence", "args": { "text": "\u000c" }, "when": "terminalFocus" },
+  { "key": "ctrl+shift+l", "command": "continue.focusContinueInput" },
+  { "key": "ctrl+shift+5", "command": "workbench.action.terminal.split", "when": "terminalFocus" }
+]
