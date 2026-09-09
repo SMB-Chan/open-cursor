@@ -2,7 +2,7 @@
   "name": "open-cursor-bridge",
   "displayName": "Open-Cursor Multi-Agent Bridge",
   "description": "課金なしのマルチLLM協調コーディング — Codex + Antigravity",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "publisher": "open-cursor",
   "engines": {
     "vscode": "^1.80.0"
@@ -78,7 +78,7 @@
             "antigravity"
           ],
           "default": "collaborative",
-          "description": "Default agent routing mode"
+          "description": "Default agent routing mode. Collaborative uses Plan → Implement → Review → Refine; Pipeline uses Plan → Implement."
         },
         "openCursor.workspacePath": {
           "type": "string",
@@ -89,6 +89,7 @@
     }
   },
   "scripts": {
-    "check": "node --check src/extension.js"
+    "check": "node --check src/extension.js && node --check src/sse.js && node --check src/sse.test.js",
+    "test": "node --test src/sse.test.js"
   }
 }

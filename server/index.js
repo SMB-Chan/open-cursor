@@ -1,32 +1,34 @@
 #!/usr/bin/env node
 /**
- * Open-Cursor Multi-Agent Bridge
- *
- * Local subscription-authenticated multi-agent coding bridge.
- * The bridge itself does not use per-call billing APIs.
+ * Open-Cursor local HTTP bridge.
+ * Execution and multi-agent orchestration live in engine.js.
  */
 
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { stat } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
-const VERSION = "2.2.0";
+import {
+  AGENTS,
+  ExecutionAbortedError,
+  ExecutionTimeoutError,
+  HttpError,
+  VERSION,
+  activeExecutionCount,
+  analyzeTask,
+  executionConfig,
+  formatCollaborativeResult,
+  getCodexModel,
+  orchestrate,
+  runProcess,
+  stopActiveProcesses,
+} from "./engine.js";
+
 const PORT = envInt("BRIDGE_PORT", 9876, 1, 65535);
 const HOST = process.env.BRIDGE_HOST || "127.0.0.1";
-const CODEX_BIN = process.env.CODEX_BIN || "codex";
-const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
-const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");
-const CODEX_HOME = join(homedir(), ".codex");
-const GEMINI_HOME = join(homedir(), ".gemini");
 const MAX_BODY_BYTES = envInt("BRIDGE_MAX_BODY_BYTES", 1024 * 1024, 1024);
-const MAX_OUTPUT_BYTES = envInt("BRIDGE_MAX_OUTPUT_BYTES", 8 * 1024 * 1024, 1024);
-const AGENT_TIMEOUT_MS = envInt("BRIDGE_AGENT_TIMEOUT_MS", 10 * 60 * 1000, 1000);
-const KILL_GRACE_MS = envInt("BRIDGE_KILL_GRACE_MS", 1500, 100);
 const ROUTING_MODES = new Set(["codex", "antigravity", "collaborative", "pipeline"]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -36,460 +38,6 @@ function envInt(name, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isInteger(parsed) || parsed < min || parsed > max) return fallback;
   return parsed;
-}
-
-class HttpError extends Error {
-  constructor(statusCode, message) {
-    super(message);
-    this.name = "HttpError";
-    this.statusCode = statusCode;
-  }
-}
-
-class ExecutionAbortedError extends Error {
-  constructor(message = "Execution aborted") {
-    super(message);
-    this.name = "AbortError";
-  }
-}
-
-class ExecutionTimeoutError extends HttpError {
-  constructor(timeoutMs) {
-    super(504, `Agent execution exceeded ${timeoutMs} ms`);
-    this.name = "ExecutionTimeoutError";
-  }
-}
-
-const AGENTS = {
-  codex: {
-    name: "Codex (OpenAI/ChatGPT)",
-    authCheck: async () => {
-      try {
-        await readFile(join(CODEX_HOME, "auth.json"), "utf-8");
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    strengths: ["code-generation", "refactoring", "debugging", "git-operations"],
-  },
-  antigravity: {
-    name: "Antigravity (Gemini AI Pro)",
-    authCheck: async () => {
-      try {
-        const settings = await readFile(
-          join(GEMINI_HOME, "antigravity-cli/settings.json"),
-          "utf-8"
-        );
-        return !JSON.parse(settings).useG1Credits;
-      } catch {
-        return false;
-      }
-    },
-    strengths: ["analysis", "architecture", "research", "multimodal", "web-search"],
-  },
-};
-
-const activeProcesses = new Map();
-
-async function getCodexModel() {
-  try {
-    const config = await readFile(join(CODEX_HOME, "config.toml"), "utf-8");
-    const match = config.match(/^model\s*=\s*"([^"]+)"/m);
-    return match ? match[1] : "auto";
-  } catch {
-    return "auto";
-  }
-}
-
-function activeExecutionCount() {
-  return activeProcesses.size;
-}
-
-function runProcess({
-  agent,
-  command,
-  args,
-  cwd,
-  env,
-  signal,
-  onStdout,
-  onStderr,
-  timeoutMs = AGENT_TIMEOUT_MS,
-  transformContent,
-}) {
-  if (signal?.aborted) {
-    return Promise.reject(new ExecutionAbortedError("Execution aborted before start"));
-  }
-
-  return new Promise((resolvePromise, rejectPromise) => {
-    const executionId = randomUUID();
-    const child = spawn(command, args, {
-      cwd: cwd || process.cwd(),
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-
-    activeProcesses.set(child, {
-      id: executionId,
-      agent,
-      startedAt: Date.now(),
-    });
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-
-    let stdout = "";
-    let stderr = "";
-    let outputBytes = 0;
-    let settled = false;
-    let aborted = false;
-    let timedOut = false;
-    let outputExceeded = false;
-    let forceKillTimer = null;
-
-    const terminate = () => {
-      if (child.exitCode !== null || child.signalCode) return;
-      try {
-        child.kill("SIGTERM");
-      } catch {}
-      if (!forceKillTimer) {
-        forceKillTimer = setTimeout(() => {
-          if (child.exitCode === null && !child.signalCode) {
-            try {
-              child.kill("SIGKILL");
-            } catch {}
-          }
-        }, KILL_GRACE_MS);
-        forceKillTimer.unref?.();
-      }
-    };
-
-    const onAbort = () => {
-      aborted = true;
-      terminate();
-    };
-
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    const executionTimer = setTimeout(() => {
-      timedOut = true;
-      terminate();
-    }, timeoutMs);
-    executionTimer.unref?.();
-
-    const cleanup = () => {
-      activeProcesses.delete(child);
-      signal?.removeEventListener("abort", onAbort);
-      clearTimeout(executionTimer);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
-    };
-
-    const settle = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      fn(value);
-    };
-
-    const consumeOutput = (kind, text, callback) => {
-      if (settled || outputExceeded) return;
-      outputBytes += Buffer.byteLength(text, "utf8");
-      if (outputBytes > MAX_OUTPUT_BYTES) {
-        outputExceeded = true;
-        terminate();
-        return;
-      }
-
-      if (kind === "stdout") stdout += text;
-      else stderr += text;
-      callback?.(text);
-    };
-
-    child.stdout.on("data", (text) => consumeOutput("stdout", text, onStdout));
-    child.stderr.on("data", (text) => consumeOutput("stderr", text, onStderr));
-
-    child.once("error", (error) => settle(rejectPromise, error));
-    child.once("close", (code, signalCode) => {
-      if (aborted) {
-        settle(rejectPromise, new ExecutionAbortedError("Agent execution cancelled"));
-        return;
-      }
-      if (timedOut) {
-        settle(rejectPromise, new ExecutionTimeoutError(timeoutMs));
-        return;
-      }
-      if (outputExceeded) {
-        settle(
-          rejectPromise,
-          new HttpError(502, `Agent output exceeded ${MAX_OUTPUT_BYTES} bytes`)
-        );
-        return;
-      }
-
-      const raw = stdout.trim() || stderr.trim();
-      const content = transformContent
-        ? transformContent(raw, { stdout, stderr, code, signal: signalCode })
-        : raw;
-
-      settle(resolvePromise, {
-        content,
-        stdout,
-        stderr,
-        agent,
-        code,
-        signal: signalCode,
-        executionId,
-      });
-    });
-  });
-}
-
-function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
-  const args = ["exec"];
-  if (model) args.push("-m", model);
-  args.push(
-    "-C",
-    cwd || process.cwd(),
-    "--sandbox",
-    "workspace-write",
-    "--ask-for-approval",
-    "never",
-    "--output-format",
-    "text",
-    prompt
-  );
-
-  return runProcess({
-    agent: "codex",
-    command: CODEX_BIN,
-    args,
-    cwd,
-    signal,
-    onStdout: onChunk,
-    env: { ...process.env, CODEX_HOME, OPENAI_API_KEY: "" },
-  });
-}
-
-function runAntigravity(prompt, { cwd, model, signal, onChunk } = {}) {
-  const args = [`-p=${prompt}`, "--output-format", "text", "--dangerously-skip-permissions"];
-  if (model) args.push("--model", model);
-
-  return runProcess({
-    agent: "antigravity",
-    command: AGY_BIN,
-    args,
-    cwd,
-    signal,
-    onStdout: onChunk,
-    env: { ...process.env, GEMINI_HOME },
-  });
-}
-
-function requireSuccessfulAgent(result) {
-  if (result.code === 0) return result;
-  const detail = (result.stderr || result.content || "no diagnostic output").trim().slice(-1200);
-  throw new HttpError(
-    502,
-    `${result.agent} exited with code ${result.code ?? "null"}: ${detail}`
-  );
-}
-
-function failedAgentResult(agent, error) {
-  return {
-    content: `[${agent} error: ${error.message}]`,
-    agent,
-    code: 1,
-  };
-}
-
-function createCollaborativeEmitter(agent, onEvent) {
-  let pending = "";
-  const label = agent === "codex" ? "Codex" : "Gemini";
-
-  const emitLine = (text) => {
-    if (!text) return;
-    onEvent?.({
-      text: `[${label}] ${text}`,
-      agent,
-      phase: "collaborative",
-    });
-  };
-
-  return {
-    push(text) {
-      pending += text;
-      let newline;
-      while ((newline = pending.indexOf("\n")) >= 0) {
-        const line = pending.slice(0, newline + 1);
-        pending = pending.slice(newline + 1);
-        emitLine(line);
-      }
-      if (pending.length >= 512) {
-        emitLine(pending);
-        pending = "";
-      }
-    },
-    flush() {
-      if (pending) emitLine(pending);
-      pending = "";
-    },
-  };
-}
-
-async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
-  const taskType = analyzeTask(prompt);
-  const selectedMode = mode || taskType.routing;
-
-  switch (selectedMode) {
-    case "codex": {
-      const result = await runCodex(prompt, {
-        cwd,
-        model,
-        signal,
-        onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "response" }),
-      });
-      return requireSuccessfulAgent(result);
-    }
-
-    case "antigravity": {
-      const result = await runAntigravity(prompt, {
-        cwd,
-        model,
-        signal,
-        onChunk: (text) =>
-          onEvent?.({ text, agent: "antigravity", phase: "response" }),
-      });
-      return requireSuccessfulAgent(result);
-    }
-
-    case "collaborative": {
-      const codexEmitter = createCollaborativeEmitter("codex", onEvent);
-      const geminiEmitter = createCollaborativeEmitter("antigravity", onEvent);
-
-      const [codexResult, geminiResult] = await Promise.all([
-        runCodex(prompt, { cwd, signal, onChunk: codexEmitter.push })
-          .then(requireSuccessfulAgent)
-          .catch((error) => failedAgentResult("codex", error))
-          .finally(codexEmitter.flush),
-        runAntigravity(prompt, { cwd, signal, onChunk: geminiEmitter.push })
-          .then(requireSuccessfulAgent)
-          .catch((error) => failedAgentResult("antigravity", error))
-          .finally(geminiEmitter.flush),
-      ]);
-
-      if (signal?.aborted) throw new ExecutionAbortedError("Collaborative execution cancelled");
-
-      return {
-        content: formatCollaborativeResult(codexResult, geminiResult),
-        agent: "collaborative",
-        code: codexResult.code === 0 || geminiResult.code === 0 ? 0 : 1,
-      };
-    }
-
-    case "pipeline": {
-      onEvent?.({
-        text: "## Analysis (Gemini/Antigravity)\n",
-        agent: "antigravity",
-        phase: "analysis-header",
-      });
-      const analysis = requireSuccessfulAgent(
-        await runAntigravity(
-          `Analyze this task and provide a detailed implementation plan:\n${prompt}`,
-          {
-            cwd,
-            model: "pro",
-            signal,
-            onChunk: (text) =>
-              onEvent?.({ text, agent: "antigravity", phase: "analysis" }),
-          }
-        )
-      );
-
-      onEvent?.({
-        text: "\n\n## Implementation (Codex/GPT)\n",
-        agent: "codex",
-        phase: "implementation-header",
-      });
-      const implementation = requireSuccessfulAgent(
-        await runCodex(
-          `Based on this analysis, implement the solution:\n\n${analysis.content}\n\nOriginal task:\n${prompt}`,
-          {
-            cwd,
-            signal,
-            onChunk: (text) =>
-              onEvent?.({ text, agent: "codex", phase: "implementation" }),
-          }
-        )
-      );
-
-      return {
-        content: `## Analysis (Gemini/Antigravity)\n${analysis.content}\n\n## Implementation (Codex/GPT)\n${implementation.content}`,
-        agent: "pipeline",
-        code: implementation.code,
-      };
-    }
-
-    default: {
-      const result = await runCodex(prompt, {
-        cwd,
-        model,
-        signal,
-        onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "response" }),
-      });
-      return requireSuccessfulAgent(result);
-    }
-  }
-}
-
-function analyzeTask(prompt) {
-  const p = prompt.toLowerCase();
-
-  if (
-    /\b(analyze|research|explain|review|audit|compare|survey|study|evaluate|investigate)\b/.test(p) ||
-    /(分析|調査|説明|レビュー|監査|比較|検証|研究|評価|考察)/.test(prompt)
-  ) {
-    return { routing: "antigravity", reason: "analysis task" };
-  }
-
-  if (
-    /\b(implement|create|build|write|fix|debug|refactor|deploy|patch|add)\b/.test(p) ||
-    /(実装|作成|構築|修正|デバッグ|リファクタ|デプロイ|追加|直して|作って)/.test(prompt)
-  ) {
-    return { routing: "codex", reason: "implementation task" };
-  }
-
-  if (
-    prompt.length > 500 ||
-    /\b(and then|after that|also|additionally|furthermore|continue)\b/.test(p) ||
-    /(その後|さらに|加えて|続けて|続行)/.test(prompt)
-  ) {
-    return { routing: "collaborative", reason: "complex multi-step task" };
-  }
-
-  return { routing: "collaborative", reason: "general task" };
-}
-
-function formatCollaborativeResult(codexResult, geminiResult) {
-  const sections = [];
-
-  if (geminiResult.content && !geminiResult.content.startsWith("[antigravity error:")) {
-    sections.push(`### Gemini Analysis\n${geminiResult.content}`);
-  } else if (geminiResult.content) {
-    sections.push(geminiResult.content);
-  }
-
-  if (codexResult.content && !codexResult.content.startsWith("[codex error:")) {
-    sections.push(`### Codex Implementation\n${codexResult.content}`);
-  } else if (codexResult.content) {
-    sections.push(codexResult.content);
-  }
-
-  if (sections.length === 0) {
-    return "Both agents returned empty responses.";
-  }
-  return sections.join("\n\n---\n\n");
 }
 
 function parseAgentSelection(modelName, headerMode) {
@@ -831,13 +379,13 @@ async function handleModels(req, res) {
       id: "collaborative",
       object: "model",
       owned_by: "bridge",
-      description: "Both agents collaborate",
+      description: "Gemini plans/reviews; Codex implements/refines sequentially",
     },
     {
       id: "pipeline",
       object: "model",
       owned_by: "bridge",
-      description: "Gemini analyzes → Codex implements",
+      description: "Detached Gemini analysis → Codex implementation",
     },
   ];
 
@@ -890,8 +438,7 @@ async function handleAgents(req, res) {
     auth: "subscription-only",
     execution: {
       active: activeExecutionCount(),
-      timeout_ms: AGENT_TIMEOUT_MS,
-      max_output_bytes: MAX_OUTPUT_BYTES,
+      ...executionConfig(),
     },
   });
 }
@@ -907,8 +454,7 @@ async function handleHealth(req, res) {
     billing: "NONE",
     execution: {
       active: activeExecutionCount(),
-      timeout_ms: AGENT_TIMEOUT_MS,
-      max_output_bytes: MAX_OUTPUT_BYTES,
+      ...executionConfig(),
     },
     agents: {
       codex: { available: codexAuth, source: "ChatGPT subscription" },
@@ -943,16 +489,6 @@ const server = createServer(async (req, res) => {
   }
 });
 
-function stopActiveProcesses() {
-  for (const child of activeProcesses.keys()) {
-    if (child.exitCode === null && !child.signalCode) {
-      try {
-        child.kill("SIGTERM");
-      } catch {}
-    }
-  }
-}
-
 function startServer() {
   if (!LOOPBACK_HOSTS.has(HOST) && process.env.BRIDGE_ALLOW_REMOTE !== "1") {
     throw new Error(
@@ -963,7 +499,10 @@ function startServer() {
 
   const shutdown = () => {
     stopActiveProcesses();
-    const hardExit = setTimeout(() => process.exit(0), KILL_GRACE_MS + 500);
+    const hardExit = setTimeout(
+      () => process.exit(0),
+      executionConfig().kill_grace_ms + 500
+    );
     hardExit.unref?.();
     server.close(() => {
       clearTimeout(hardExit);
@@ -977,6 +516,7 @@ function startServer() {
   server.listen(PORT, HOST, async () => {
     const codexAuth = await AGENTS.codex.authCheck();
     const agyAuth = await AGENTS.antigravity.authCheck();
+    const execution = executionConfig();
 
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
@@ -986,8 +526,8 @@ function startServer() {
 ║  Endpoint : http://${HOST}:${PORT}
 ║  Codex    : ${codexAuth ? "READY" : "NOT AUTHENTICATED"}
 ║  Gemini   : ${agyAuth ? "READY" : "NOT AUTHENTICATED"}
-║  Timeout  : ${AGENT_TIMEOUT_MS} ms
-║  Max out  : ${MAX_OUTPUT_BYTES} bytes
+║  Timeout  : ${execution.timeout_ms} ms
+║  Max out  : ${execution.max_output_bytes} bytes
 ╚══════════════════════════════════════════════════════════════╝
 `);
   });
@@ -1004,9 +544,9 @@ if (isMain) {
 }
 
 export {
-  HttpError,
   ExecutionAbortedError,
   ExecutionTimeoutError,
+  HttpError,
   activeExecutionCount,
   analyzeTask,
   buildPrompt,
