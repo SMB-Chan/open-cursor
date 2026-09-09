@@ -1,10 +1,9 @@
 #!/bin/bash
 # Open-Cursor Bridge Installer
-# 課金主義を排除し、民衆のために再構築されたコーディング環境
 #
 # Architecture:
 #   ~/.cursor-codex-bridge/     ← stable bridge path outside Cursor
-#   ~/.cursor/extensions/       ← Symlinked extension (survives Cursor updates)
+#   ~/.cursor/extensions/       ← linked extension (survives Cursor updates)
 #   ~/.gemini/antigravity-cli/  ← Antigravity data (independent)
 #   ~/.codex/                   ← Codex data (independent)
 #
@@ -39,12 +38,8 @@ NC='\033[0m'
 
 echo -e "${CYAN}${BOLD}"
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║       Open-Cursor Bridge Installer v2.0                  ║"
-echo "║   課金なし · サブスクリプションのみ · 民衆のためのIDE     ║"
-echo "╠══════════════════════════════════════════════════════════╣"
-echo "║  Codex CLI    ← ChatGPTサブスクリプション (OAuth)        ║"
-echo "║  Antigravity  ← Gemini AI Proサブスクリプション (OAuth)  ║"
-echo "║  課金API      ← 一切使用しない                          ║"
+echo "║              Open-Cursor Bridge Installer               ║"
+echo "║        Codex + Antigravity · local multi-agent          ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -71,6 +66,8 @@ EXTENSION_SRC="$BRIDGE_DIR/extension"
 for required in \
   "$BRIDGE_DIR/server/index.js" \
   "$BRIDGE_DIR/extension/package.json" \
+  "$BRIDGE_DIR/scripts/register-extension.mjs" \
+  "$BRIDGE_DIR/share/open-cursor.svg" \
   "$BRIDGE_DIR/bin/open-cursor" \
   "$BRIDGE_DIR/bin/open-cursor-app"; do
   if [ ! -f "$required" ]; then
@@ -85,6 +82,11 @@ done
 echo -e "${YELLOW}[1/6] Checking prerequisites...${NC}"
 
 if command -v node &>/dev/null; then
+  NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
+  if [ "$NODE_MAJOR" -lt 18 ]; then
+    echo -e "  ${RED}✗${NC} Node.js 18+ is required; found $(node -v)"
+    exit 1
+  fi
   echo -e "  ${GREEN}✓${NC} Node.js found: $(node -v)"
 else
   echo -e "  ${RED}✗${NC} Node.js not found. Please install Node.js 18+"
@@ -98,7 +100,7 @@ if command -v codex &>/dev/null; then
   echo -e "  ${GREEN}✓${NC} Codex CLI found: $(codex --version 2>/dev/null || echo 'installed')"
   CODEX_OK=true
 else
-  echo -e "  ${RED}✗${NC} Codex CLI not found. Install: https://github.com/openai/codex"
+  echo -e "  ${YELLOW}⚠${NC} Codex CLI not found"
 fi
 
 if [ -x "$HOME/.local/bin/agy" ]; then
@@ -108,7 +110,7 @@ elif command -v agy &>/dev/null; then
   echo -e "  ${GREEN}✓${NC} Antigravity CLI found in PATH"
   AGY_OK=true
 else
-  echo -e "  ${RED}✗${NC} Antigravity CLI not found"
+  echo -e "  ${YELLOW}⚠${NC} Antigravity CLI not found"
 fi
 
 if ! $CODEX_OK && ! $AGY_OK; then
@@ -119,31 +121,47 @@ fi
 # ── Step 2: Verify authentication ────────────────────────
 
 echo ""
-echo -e "${YELLOW}[2/6] Verifying authentication (subscription-only)...${NC}"
+echo -e "${YELLOW}[2/6] Verifying authentication mode...${NC}"
 
 if $CODEX_OK; then
   if [ -f "$HOME/.codex/auth.json" ]; then
-    AUTH_MODE=$(python3 -c "import json; print(json.load(open('$HOME/.codex/auth.json')).get('auth_mode','unknown'))" 2>/dev/null || echo "unknown")
+    AUTH_MODE="$(node -e '
+const fs = require("node:fs");
+try {
+  const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  process.stdout.write(String(data.auth_mode ?? "unknown"));
+} catch {
+  process.stdout.write("unknown");
+}
+' "$HOME/.codex/auth.json")"
     if [ "$AUTH_MODE" = "chatgpt" ]; then
-      echo -e "  ${GREEN}✓${NC} Codex: ChatGPT OAuth (subscription, no billing)"
+      echo -e "  ${GREEN}✓${NC} Codex: ChatGPT OAuth"
     else
-      echo -e "  ${YELLOW}⚠${NC} Codex: auth_mode=$AUTH_MODE (verify no billing)"
+      echo -e "  ${YELLOW}⚠${NC} Codex: auth_mode=$AUTH_MODE; verify the intended billing/auth mode"
     fi
   else
-    echo -e "  ${RED}✗${NC} Codex: not authenticated. Run 'codex login'"
+    echo -e "  ${YELLOW}⚠${NC} Codex auth file not found; run 'codex login' before use"
   fi
 fi
 
 if $AGY_OK; then
   if [ -f "$HOME/.gemini/antigravity-cli/settings.json" ]; then
-    USE_CREDITS=$(python3 -c "import json; print(json.load(open('$HOME/.gemini/antigravity-cli/settings.json')).get('useG1Credits', True))" 2>/dev/null || echo "True")
-    if [ "$USE_CREDITS" = "False" ]; then
-      echo -e "  ${GREEN}✓${NC} Antigravity: Subscription mode (no credits)"
+    USE_CREDITS="$(node -e '
+const fs = require("node:fs");
+try {
+  const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  process.stdout.write(String(data.useG1Credits ?? true));
+} catch {
+  process.stdout.write("true");
+}
+' "$HOME/.gemini/antigravity-cli/settings.json")"
+    if [ "$USE_CREDITS" = "false" ]; then
+      echo -e "  ${GREEN}✓${NC} Antigravity: subscription mode"
     else
       echo -e "  ${YELLOW}⚠${NC} Antigravity: useG1Credits=$USE_CREDITS"
     fi
   else
-    echo -e "  ${YELLOW}⚠${NC} Antigravity: settings not found"
+    echo -e "  ${YELLOW}⚠${NC} Antigravity settings not found"
   fi
 fi
 
@@ -177,45 +195,63 @@ fi
 # ── Step 5: Create/update Cursor extension link ──────────
 
 echo ""
-echo -e "${YELLOW}[5/6] Linking Cursor extension (update-proof)...${NC}"
+echo -e "${YELLOW}[5/6] Linking Cursor extension (upgrade-safe)...${NC}"
 
 mkdir -p "$CURSOR_EXT_DIR"
 rm -f "$CURSOR_EXT_DIR/.obsolete"
 
-ln -sfn "$EXTENSION_SRC" "$EXTENSION_LINK"
-ln -sfn "$EXTENSION_SRC" "$CURSOR_EXT_DIR/open-cursor.open-cursor-bridge-2.2.0"
+EXTENSION_VERSION="$(node -e '
+const p = require(process.argv[1]);
+if (!p.version) process.exit(2);
+process.stdout.write(p.version);
+' "$EXTENSION_SRC/package.json")"
+EXTENSION_ID="$(node -e '
+const p = require(process.argv[1]);
+if (!p.publisher || !p.name) process.exit(2);
+process.stdout.write(`${p.publisher}.${p.name}`);
+' "$EXTENSION_SRC/package.json")"
+VERSIONED_LINK="$CURSOR_EXT_DIR/$EXTENSION_ID-$EXTENSION_VERSION"
 
-# Register in extensions.json if exists
+if [ -e "$EXTENSION_LINK" ] && [ ! -L "$EXTENSION_LINK" ]; then
+  echo -e "${RED}Extension path exists and is not a symlink:${NC} $EXTENSION_LINK"
+  exit 1
+fi
+ln -sfn "$EXTENSION_SRC" "$EXTENSION_LINK"
+
+for stale in "$CURSOR_EXT_DIR/$EXTENSION_ID-"*; do
+  [ -e "$stale" ] || [ -L "$stale" ] || continue
+  if [ "$stale" = "$VERSIONED_LINK" ]; then
+    continue
+  fi
+  if [ -L "$stale" ]; then
+    rm -f "$stale"
+    echo -e "  ${CYAN}ℹ${NC} Removed stale extension link: $(basename "$stale")"
+  fi
+done
+
+if [ -e "$VERSIONED_LINK" ] && [ ! -L "$VERSIONED_LINK" ]; then
+  echo -e "${RED}Versioned extension path exists and is not a symlink:${NC} $VERSIONED_LINK"
+  exit 1
+fi
+ln -sfn "$EXTENSION_SRC" "$VERSIONED_LINK"
+
 if [ -f "$CURSOR_EXT_DIR/extensions.json" ]; then
-  python3 -c '
-import json, sys
-from pathlib import Path
-p = Path(sys.argv[1])
-try:
-    data = json.loads(p.read_text())
-    data = [e for e in data if e.get("identifier", {}).get("id") != "open-cursor.open-cursor-bridge"]
-    data.append({
-        "identifier": {"id": "open-cursor.open-cursor-bridge"},
-        "version": "2.2.0",
-        "location": {"$mid": 1, "path": sys.argv[2], "scheme": "file"},
-        "relativeLocation": "open-cursor.open-cursor-bridge-2.2.0",
-        "metadata": {"installedTimestamp": 1788939000000, "pinned": True}
-    })
-    p.write_text(json.dumps(data, indent=2))
-except Exception:
-    pass
-' "$CURSOR_EXT_DIR/extensions.json" "$EXTENSION_SRC" 2>/dev/null || true
+  REGISTRATION="$(node "$BRIDGE_DIR/scripts/register-extension.mjs" \
+    "$CURSOR_EXT_DIR/extensions.json" "$EXTENSION_SRC")"
+  echo -e "  ${GREEN}✓${NC} Cursor registry updated: $REGISTRATION"
+else
+  echo -e "  ${CYAN}ℹ${NC} extensions.json not present; symlink discovery remains installed"
 fi
 
+echo -e "  ${GREEN}✓${NC} Extension $EXTENSION_ID@$EXTENSION_VERSION"
 echo -e "  ${GREEN}✓${NC} Extension linked: $EXTENSION_LINK → $EXTENSION_SRC"
-echo -e "  ${CYAN}ℹ${NC} Extension source lives OUTSIDE Cursor's managed directories"
+echo -e "  ${CYAN}ℹ${NC} Extension source lives outside Cursor's managed application files"
 
 # ── Step 6: Create desktop entry ─────────────────────────
 
 echo ""
 echo -e "${YELLOW}[6/6] Creating startup configuration...${NC}"
 
-# Install scalable icon to user icon theme
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 mkdir -p "$ICON_DIR"
 cp "$BRIDGE_DIR/share/open-cursor.svg" "$ICON_DIR/open-cursor.svg"
@@ -232,7 +268,7 @@ Name[ja]=Open-Cursor
 GenericName=Multi-Agent Code Editor
 GenericName[ja]=マルチエージェント コードエディタ
 Comment=Multi-agent coding IDE (subscription-backed local bridge)
-Comment[ja]=課金なしのマルチLLM協調コーディングIDE — Codex + Antigravity
+Comment[ja]=Codex + Antigravity マルチエージェント コーディングIDE
 Exec=$BRIDGE_DIR/bin/open-cursor-app %F
 Icon=$BRIDGE_DIR/share/open-cursor.svg
 Terminal=false
@@ -257,7 +293,6 @@ EOF
 
 chmod 644 "$DESKTOP_FILE"
 
-# Place desktop shortcut if Desktop directory exists
 for desktop_dir in "$HOME/デスクトップ" "$HOME/Desktop"; do
   if [ -d "$desktop_dir" ]; then
     SHORTCUT="$desktop_dir/Open-Cursor.desktop"
@@ -285,28 +320,27 @@ chmod +x "$BRIDGE_DIR/server/index.js" 2>/dev/null || true
 
 echo ""
 echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  Installation Complete!${NC}"
+echo -e "${GREEN}${BOLD}  Installation Complete — Open-Cursor $EXTENSION_VERSION${NC}"
 echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  ${CYAN}Quick Start:${NC}"
 echo -e "    1. Run: ${BOLD}$BRIDGE_DIR/bin/open-cursor-app${NC}"
 echo -e "    2. Or launch ${BOLD}Open-Cursor${NC} from your desktop menu"
-echo -e "    3. In Cursor: ${BOLD}Ctrl+Shift+P → Open-Cursor: Chat with Agents${NC}"
+echo -e "    3. In Cursor: ${BOLD}Ctrl+Shift+A${NC} or Command Palette → Open-Cursor: Chat with Agents"
 echo ""
 echo -e "  ${CYAN}Agent Modes:${NC}"
-echo -e "    collaborative  — Both agents work together"
-echo -e "    pipeline       — Gemini analyzes → Codex implements"
-echo -e "    codex          — Codex only (ChatGPT)"
-echo -e "    antigravity    — Antigravity only (Gemini)"
+echo -e "    collaborative  — Gemini Plan → Codex Implement → Gemini Review → Codex Refine"
+echo -e "    pipeline       — Gemini Plan → Codex Implement"
+echo -e "    codex          — Codex only"
+echo -e "    antigravity    — Antigravity only"
 echo ""
 echo -e "  ${CYAN}Update Protection:${NC}"
-echo -e "    • Bridge: ${BOLD}$BRIDGE_DIR/${NC} (outside Cursor)"
+echo -e "    • Bridge: ${BOLD}$BRIDGE_DIR/${NC} (outside Cursor application files)"
 echo -e "    • Codex: ${BOLD}~/.codex/${NC} (independent)"
 echo -e "    • Antigravity: ${BOLD}~/.gemini/antigravity-cli/${NC} (independent)"
-echo -e "    • Cursor updates CANNOT touch these directories"
 echo ""
-echo -e "  ${YELLOW}Billing model:${NC}"
-echo -e "    • Codex is expected to use ChatGPT subscription OAuth"
-echo -e "    • Antigravity is expected to use Gemini AI Pro subscription mode"
-echo -e "    • The bridge itself does not require API keys or per-call billing"
+echo -e "  ${YELLOW}Authentication / billing:${NC}"
+echo -e "    • Verify Codex is using the intended ChatGPT authentication mode"
+echo -e "    • Verify Antigravity is using the intended subscription/credit mode"
+echo -e "    • Open-Cursor itself does not require a per-call API key"
 echo ""
