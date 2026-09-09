@@ -82,6 +82,7 @@
     }
   },
   "scripts": {
-    "check": "node --check src/extension.js"
+    "check": "node --check src/extension.js && node --check src/sse.js && node --check src/sse.test.js",
+    "test": "node --test src/sse.test.js"
   }
 }
