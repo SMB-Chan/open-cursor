@@ -74,11 +74,6 @@ let cachedUsage = null;
 let lastUsageFetch = 0;
 const USAGE_CACHE_TTL_MS = 4000;
 
-export function resetUsageCache() {
-  cachedUsage = null;
-  lastUsageFetch = 0;
-}
-
 export async function fetchUsageData(forceFresh = false) {
   const now = Date.now();
   if (!forceFresh && cachedUsage && now - lastUsageFetch < USAGE_CACHE_TTL_MS) {

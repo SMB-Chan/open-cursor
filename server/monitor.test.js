@@ -15,11 +15,11 @@ test("updateExecutionState updates in-memory state and prepends recent steps", (
     mode: "autonomous",
     step: 1,
     currentAction: "Web調査",
-    targetFile: "timetable.html",
+    targetFile: "dashboards/fixture.html",
     newStep: {
       step: 1,
       action: "Web調査",
-      file: "timetable.html",
+      file: "dashboards/fixture.html",
       timestamp: Date.now(),
     },
   });
@@ -29,7 +29,7 @@ test("updateExecutionState updates in-memory state and prepends recent steps", (
   assert.equal(state.agent, "antigravity");
   assert.equal(state.mode, "autonomous");
   assert.equal(state.step, 1);
-  assert.equal(state.targetFile, "timetable.html");
+  assert.equal(state.targetFile, "dashboards/fixture.html");
   assert.ok(state.recentSteps.length >= 1);
   assert.equal(state.recentSteps[0].action, "Web調査");
 });
