@@ -11,6 +11,10 @@ const os = require("node:os");
 const { randomBytes, randomUUID } = require("node:crypto");
 const { consumeSse } = require("./sse.js");
 const { pollExecutionReceipt, summarizeWorkspaceReceipt } = require("./receipt.js");
+const markdownSource = require("node:fs").readFileSync(
+  require("node:path").join(__dirname, "markdown.js"),
+  "utf8"
+);
 
 const DEFAULT_PORT = 9876;
 const HEALTH_TIMEOUT_MS = 1500;
@@ -554,6 +558,24 @@ function getChatHTML(webview) {
     .phase-pill.failed { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
     .assistant-body { padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .assistant-body.thinking { color: var(--vscode-descriptionForeground); font-style: italic; }
+    /* Markdown blocks (rendered per block; append-only DOM) */
+    .assistant-body { white-space: normal; }
+    .md-p { white-space: pre-wrap; margin: 6px 0; }
+    .md-heading { margin: 12px 0 4px; line-height: 1.3; }
+    .md-h1 { font-size: 1.35em; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 3px; }
+    .md-h2 { font-size: 1.2em; }
+    .md-h3 { font-size: 1.08em; }
+    .md-h4, .md-h5, .md-h6 { font-size: 1em; }
+    .md-hr { border: none; border-top: 1px solid var(--vscode-widget-border); margin: 10px 0; }
+    .md-code-wrap { margin: 8px 0; border: 1px solid var(--vscode-widget-border); border-radius: 6px; overflow: hidden; background: var(--vscode-editor-background); }
+    .md-code-lang { font-size: 10px; padding: 3px 8px; color: var(--vscode-descriptionForeground); border-bottom: 1px solid var(--vscode-widget-border); font-family: var(--vscode-editor-font-family); }
+    .md-code { margin: 0; padding: 8px 10px; overflow-x: auto; font-family: var(--vscode-editor-font-family); font-size: 12px; line-height: 1.45; white-space: pre; }
+    .md-code code { font-family: inherit; white-space: pre; }
+    .md-quote { margin: 8px 0; padding: 4px 10px; border-left: 3px solid var(--vscode-focusBorder); color: var(--vscode-descriptionForeground); }
+    .md-quote-line { white-space: pre-wrap; margin: 2px 0; }
+    .md-list { margin: 6px 0; padding-left: 22px; }
+    .md-li { margin: 2px 0; }
+    .md-icode { font-family: var(--vscode-editor-font-family); font-size: 12px; background: var(--vscode-textCodeBlock-background); border-radius: 3px; padding: 1px 4px; }
     .workspace-receipt { margin: 0 10px 10px; padding: 9px 10px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editor-background); font-size: 11px; }
     .receipt-title { font-weight: 600; margin-bottom: 4px; }
     .receipt-summary { color: var(--vscode-foreground); margin-bottom: 5px; }
@@ -604,6 +626,10 @@ function getChatHTML(webview) {
     const mode = document.getElementById('mode');
     const sendButton = document.getElementById('send');
     const cancelButton = document.getElementById('cancel');
+
+    // Streaming markdown renderer (UMD source inlined; see src/markdown.js).
+    ${markdownSource.replace(/<\/script>/g, '<\\/script>')}
+    const MD = self.OpenCursorMarkdown;
 
     const PHASE_LABELS = {
       plan: 'Plan',
@@ -817,7 +843,188 @@ function getChatHTML(webview) {
       activePhase = null;
       receivedDelta = false;
       phaseNodes = new Map();
+      mdReset();
       setBusy(false);
+    }
+
+    // ── Incremental markdown rendering ──────────────────────────────
+    // Completed blocks become DOM once and are never re-parsed; only the live
+    // tail block is touched per frame, so long goal-loop transcripts stay
+    // smooth regardless of transcript size.
+
+    let mdStream = null;
+    let mdScheduled = false;
+    let mdTailEl = null;
+    let mdTailIsFence = false;
+    let mdRenderedFenceLines = 0;
+
+    function mdReset() {
+      mdStream = null;
+      mdScheduled = false;
+      mdTailEl = null;
+      mdTailIsFence = false;
+      mdRenderedFenceLines = 0;
+    }
+
+    function mdBegin() {
+      mdReset();
+      mdStream = new MD.MarkdownStream();
+    }
+
+    function mdPush(text) {
+      if (!mdStream) return;
+      mdStream.push(text);
+      mdScheduleFlush();
+    }
+
+    function mdScheduleFlush() {
+      if (mdScheduled) return;
+      mdScheduled = true;
+      const run = () => {
+        mdScheduled = false;
+        mdFlush();
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+      else setTimeout(run, 16);
+    }
+
+    function mdFlush(final) {
+      if (!mdStream || !assistantBody) return;
+      const wasPinned = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 48;
+
+      const result = final ? mdStream.drainFinal() : mdStream.drain();
+      for (const block of result.stable) {
+        mdRemoveTailEl();
+        assistantBody.appendChild(mdRenderBlock(block));
+      }
+      if (final) {
+        if (result.tail) assistantBody.appendChild(mdRenderBlock(result.tail));
+        mdRemoveTailEl();
+      } else {
+        mdUpdateTail(result.tail);
+      }
+
+      if (wasPinned) messages.scrollTop = messages.scrollHeight;
+    }
+
+    function mdRemoveTailEl() {
+      if (mdTailEl && mdTailEl.parentNode) mdTailEl.parentNode.removeChild(mdTailEl);
+      mdTailEl = null;
+      mdTailIsFence = false;
+      mdRenderedFenceLines = 0;
+    }
+
+    function mdUpdateTail(tail) {
+      if (!assistantBody) return;
+      if (!tail) {
+        mdRemoveTailEl();
+        return;
+      }
+
+      // An open fence grows append-only: push new body lines into the
+      // existing text node instead of re-rendering the whole block.
+      if (tail.type === 'code' && tail.open) {
+        if (mdTailEl && mdTailIsFence) {
+          mdAppendFenceLines(tail.body);
+          return;
+        }
+        mdRemoveTailEl();
+        mdTailEl = mdRenderBlock(tail);
+        mdTailIsFence = true;
+        mdRenderedFenceLines = 0;
+        mdAppendFenceLines(tail.body);
+        assistantBody.appendChild(mdTailEl);
+        return;
+      }
+
+      // Non-fence tails (paragraphs, lists, quotes) are small: re-render.
+      mdRemoveTailEl();
+      mdTailEl = mdRenderBlock(tail);
+      assistantBody.appendChild(mdTailEl);
+    }
+
+    function mdAppendFenceLines(bodyLines) {
+      const codeNode = mdTailEl && mdTailEl.querySelector ? mdTailEl.querySelector('code') : null;
+      if (!codeNode) return;
+      for (let i = mdRenderedFenceLines; i < bodyLines.length; i++) {
+        codeNode.appendChild(document.createTextNode((i > 0 ? '\n' : '') + bodyLines[i]));
+      }
+      mdRenderedFenceLines = bodyLines.length;
+    }
+
+    function mdRenderBlock(block) {
+      if (block.type === 'heading') {
+        const level = Math.max(1, Math.min(6, block.level || 1));
+        const el = document.createElement('h' + level);
+        el.className = 'md-heading md-h' + level;
+        mdRenderInline(block.text, el);
+        return el;
+      }
+      if (block.type === 'hr') {
+        const el = document.createElement('hr');
+        el.className = 'md-hr';
+        return el;
+      }
+      if (block.type === 'code') {
+        const wrap = document.createElement('div');
+        wrap.className = 'md-code-wrap';
+        if (block.lang) {
+          const lang = document.createElement('div');
+          lang.className = 'md-code-lang';
+          lang.textContent = block.lang;
+          wrap.appendChild(lang);
+        }
+        const pre = document.createElement('pre');
+        pre.className = 'md-code';
+        const code = document.createElement('code');
+        code.textContent = block.body.join('\n');
+        pre.appendChild(code);
+        wrap.appendChild(pre);
+        return wrap;
+      }
+      if (block.type === 'quote') {
+        const el = document.createElement('blockquote');
+        el.className = 'md-quote';
+        for (const line of block.lines) {
+          const p = document.createElement('div');
+          p.className = 'md-quote-line';
+          mdRenderInline(line, p);
+          el.appendChild(p);
+        }
+        return el;
+      }
+      if (block.type === 'list') {
+        const el = document.createElement(block.ordered ? 'ol' : 'ul');
+        el.className = 'md-list';
+        for (const item of block.items) {
+          const li = document.createElement('li');
+          li.className = 'md-li';
+          mdRenderInline(item.join(' '), li);
+          el.appendChild(li);
+        }
+        return el;
+      }
+      const p = document.createElement('p');
+      p.className = 'md-p';
+      mdRenderInline(block.lines.join('\n'), p);
+      return p;
+    }
+
+    function mdRenderInline(text, parent) {
+      for (const token of MD.tokenizeInline(text)) {
+        if (token.t === 'code') {
+          const code = document.createElement('code');
+          code.className = 'md-icode';
+          code.textContent = token.v;
+          parent.appendChild(code);
+        } else if (token.t === 'bold') {
+          const strong = document.createElement('strong');
+          strong.textContent = token.v;
+          parent.appendChild(strong);
+        } else {
+          parent.appendChild(document.createTextNode(token.v));
+        }
+      }
     }
 
     input.addEventListener('keydown', (event) => {
@@ -843,12 +1050,12 @@ function getChatHTML(webview) {
 
         if (typeof msg.text === 'string' && msg.text.length > 0) {
           if (!receivedDelta) {
+            if (!mdStream) mdBegin();
             assistantBody.textContent = '';
             assistantBody.classList.remove('thinking');
             receivedDelta = true;
           }
-          assistantBody.textContent += msg.text;
-          messages.scrollTop = messages.scrollHeight;
+          mdPush(msg.text);
         }
       } else if (msg.type === 'complete') {
         settleActivePhase('done');
@@ -857,6 +1064,7 @@ function getChatHTML(webview) {
           assistantBody.textContent = msg.empty ? 'No response' : assistantBody.textContent;
           assistantBody.classList.remove('thinking');
         }
+        if (receivedDelta && mdStream) mdFlush(true);
         renderReceipt(msg.receipt);
         finish();
       } else if (msg.type === 'cancelled') {
@@ -867,6 +1075,7 @@ function getChatHTML(webview) {
           else assistantBody.textContent += '\n\n[Cancelled]';
           assistantBody.classList.remove('thinking');
         }
+        if (receivedDelta && mdStream) mdFlush(true);
         renderReceipt(msg.receipt);
         finish();
       } else if (msg.type === 'error') {
@@ -874,7 +1083,10 @@ function getChatHTML(webview) {
         if (agentBadge) agentBadge.textContent = 'Failed';
         if (assistantBody) {
           if (!receivedDelta) assistantBody.textContent = msg.text;
-          else assistantBody.textContent += '\n\n[Failed: ' + msg.text + ']';
+          else {
+            if (mdStream) mdFlush(true);
+            assistantBody.textContent += '\n\n[Failed: ' + msg.text + ']';
+          }
           assistantBody.classList.remove('thinking');
           assistantBody.classList.add('error');
         } else {

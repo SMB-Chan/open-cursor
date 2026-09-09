@@ -223,6 +223,18 @@ An explicitly requested `antigravity` route is treated differently from automati
 
 The Cursor chat UI renders that metadata independently from the answer body. Collaborative runs expose **Plan / Implement / Review / Refine** progress and the active Gemini/Codex backend; pipeline runs expose **Plan / Implement**.
 
+### Long-session streaming markdown renderer
+
+The chat webview renders assistant output as markdown with an **incremental, block-memoized pipeline** (`extension/src/markdown.js`, pure UMD, also unit-tested in Node):
+
+- completed markdown blocks (headings, paragraphs, lists, quotes, closed code fences) are tokenized **once** and appended to the DOM permanently; they are never re-parsed, so per-delta cost is proportional to the new text, not the transcript length
+- only the live tail block is re-rendered per frame; an unterminated code fence grows append-only via text nodes instead of rebuilding its content
+- DOM updates are batched to one flush per animation frame, so SSE chunk frequency cannot thrash layout
+- auto-scroll is smart: it follows output only while the user is already near the bottom, so scrolling back during a long goal-loop run is stable
+- all rendering goes through `createElement`/`createTextNode` with inline tokens (inline code, bold) — `innerHTML` is never used, so repository content cannot inject markup into the webview
+
+This replaces the previous `textContent +=` accumulator that re-serialized the whole transcript on every chunk and degraded visibly on long coding sessions.
+
 The extension's **Stop** action aborts its fetch. The bridge propagates the disconnect/abort to all child processes owned by that request, sends `SIGTERM`, and escalates to `SIGKILL` after the grace period when necessary.
 
 A single `chatcmpl-*` ID is retained for the entire stream and is also exposed as `X-Open-Cursor-Request-Id`.
