@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import {
   buildGitReviewContext,
   buildWorkspaceContext,
+  getGitHead,
   isSecretPath,
   withIsolatedDirectory,
 } from "./context.js";
@@ -32,6 +33,12 @@ function run(command, args, cwd) {
       else rejectPromise(new Error(`${command} exited ${code}: ${stderr}`));
     });
   });
+}
+
+async function initRepo(directory) {
+  await run("git", ["init"], directory);
+  await run("git", ["config", "user.email", "test@example.invalid"], directory);
+  await run("git", ["config", "user.name", "Open Cursor Test"], directory);
 }
 
 test("secret-like paths are excluded from workspace context", async () => {
@@ -77,20 +84,48 @@ test("workspace context obeys its byte budget", async () => {
   });
 });
 
-test("git review context captures workspace changes", async () => {
+test("git review context follows a baseline across later commits", async () => {
   await withTempDir(async (directory) => {
-    await run("git", ["init"], directory);
-    await run("git", ["config", "user.email", "test@example.invalid"], directory);
-    await run("git", ["config", "user.name", "Open Cursor Test"], directory);
+    await initRepo(directory);
     await writeFile(join(directory, "sample.txt"), "before\n");
     await run("git", ["add", "sample.txt"], directory);
     await run("git", ["commit", "-m", "base"], directory);
-    await writeFile(join(directory, "sample.txt"), "after\n");
+    const baseline = await getGitHead(directory);
 
-    const review = await buildGitReviewContext(directory, { maxBytes: 16 * 1024 });
+    await writeFile(join(directory, "sample.txt"), "after\n");
+    await run("git", ["add", "sample.txt"], directory);
+    await run("git", ["commit", "-m", "agent commit"], directory);
+
+    const review = await buildGitReviewContext(directory, {
+      baseRef: baseline,
+      maxBytes: 16 * 1024,
+    });
     assert.match(review, /sample\.txt/);
     assert.match(review, /-before/);
     assert.match(review, /\+after/);
+  });
+});
+
+test("git review context omits secret-like file contents", async () => {
+  await withTempDir(async (directory) => {
+    await initRepo(directory);
+    await writeFile(join(directory, "sample.txt"), "before\n");
+    await writeFile(join(directory, ".env"), "SECRET=before\n");
+    await run("git", ["add", "sample.txt", ".env"], directory);
+    await run("git", ["commit", "-m", "base"], directory);
+    const baseline = await getGitHead(directory);
+
+    await writeFile(join(directory, "sample.txt"), "after\n");
+    await writeFile(join(directory, ".env"), "SECRET=after-super-sensitive\n");
+
+    const review = await buildGitReviewContext(directory, {
+      baseRef: baseline,
+      maxBytes: 16 * 1024,
+    });
+    assert.match(review, /sample\.txt/);
+    assert.match(review, /secret-like changed paths omitted/i);
+    assert.doesNotMatch(review, /after-super-sensitive/);
+    assert.doesNotMatch(review, /\.env/);
   });
 });
 
