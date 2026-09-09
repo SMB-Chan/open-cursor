@@ -13,7 +13,7 @@ import {
 } from "./context.js";
 import { compressHandoff, safePromptArg } from "./compressor.js";
 
-const VERSION = "2.3.0";
+const VERSION = "2.4.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");

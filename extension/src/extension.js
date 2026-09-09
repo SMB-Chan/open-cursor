@@ -8,12 +8,16 @@ const { spawn, execSync } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
-const { randomBytes } = require("node:crypto");
+const { randomBytes, randomUUID } = require("node:crypto");
 const { consumeSse } = require("./sse.js");
+const { pollExecutionReceipt, summarizeWorkspaceReceipt } = require("./receipt.js");
 
 const DEFAULT_PORT = 9876;
 const HEALTH_TIMEOUT_MS = 1500;
 const STARTUP_TIMEOUT_MS = 10000;
+const RECEIPT_FETCH_ATTEMPTS = 8;
+const RECEIPT_FETCH_DELAY_MS = 125;
+const RECEIPT_FETCH_TIMEOUT_MS = 1000;
 
 function resolveNodeExecutable() {
   const configured = config().get("nodePath", "node") || "node";
@@ -259,7 +263,19 @@ function workspacePath() {
   );
 }
 
-async function streamMessage(context, prompt, mode, signal, onEvent) {
+async function fetchExecutionReceipt(requestId, options = {}) {
+  return pollExecutionReceipt({
+    requestId,
+    bridgeUrl: bridgeUrl(),
+    fetchFn: fetch,
+    sleepFn: sleep,
+    attempts: options.attempts ?? RECEIPT_FETCH_ATTEMPTS,
+    delayMs: options.delayMs ?? RECEIPT_FETCH_DELAY_MS,
+    timeoutMs: options.timeoutMs ?? RECEIPT_FETCH_TIMEOUT_MS,
+  });
+}
+
+async function streamMessage(context, prompt, mode, signal, onEvent, onStarted, preferredRequestId) {
   await ensureBridge(context);
 
   const selectedMode = mode || config().get("defaultAgent", "collaborative");
@@ -270,6 +286,7 @@ async function streamMessage(context, prompt, mode, signal, onEvent) {
       "Content-Type": "application/json",
       "X-Workspace-Path": workspacePath(),
       "X-Agent-Mode": selectedMode,
+      ...(preferredRequestId ? { "X-Open-Cursor-Request-Id": preferredRequestId } : {}),
     },
     body: JSON.stringify({
       model: selectedMode,
@@ -278,12 +295,31 @@ async function streamMessage(context, prompt, mode, signal, onEvent) {
     }),
   });
 
+  const bridgeRequestId = response.headers.get("x-open-cursor-request-id") || preferredRequestId || null;
+  if (bridgeRequestId) onStarted?.(bridgeRequestId);
+
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload?.error?.message || `Bridge returned HTTP ${response.status}`);
+    const error = new Error(payload?.error?.message || `Bridge returned HTTP ${response.status}`);
+    error.workspaceReceipt = payload?.open_cursor?.workspace_receipt || null;
+    throw error;
   }
 
-  return consumeSse(response, onEvent);
+  let workspaceReceipt = null;
+  let streamError = null;
+  const content = await consumeSse(response, (event) => {
+    if (event?.metadata?.workspace_receipt) {
+      workspaceReceipt = event.metadata.workspace_receipt;
+    }
+    if (event?.metadata?.error) {
+      streamError = new Error(event.metadata.message || "Bridge execution failed");
+      streamError.workspaceReceipt = workspaceReceipt;
+    }
+    onEvent?.(event);
+  });
+
+  if (streamError) throw streamError;
+  return { content, requestId: bridgeRequestId, workspaceReceipt };
 }
 
 async function showStatus() {
@@ -333,7 +369,12 @@ function registerChatCommand(context) {
       if (msg.type !== "send" || typeof msg.text !== "string" || currentRequest) return;
 
       const controller = new AbortController();
-      currentRequest = { id: msg.requestId, controller };
+      const requestState = {
+        id: msg.requestId,
+        controller,
+        bridgeRequestId: `chatcmpl-${randomUUID()}`,
+      };
+      currentRequest = requestState;
       activeRequests.add(controller);
       panel.webview.postMessage({
         type: "begin",
@@ -342,7 +383,7 @@ function registerChatCommand(context) {
       });
 
       try {
-        const content = await streamMessage(
+        const result = await streamMessage(
           context,
           msg.text,
           msg.mode,
@@ -355,16 +396,40 @@ function registerChatCommand(context) {
               agent: event.agent,
               phase: event.phase,
               metadata: event.metadata,
-            })
+            }),
+          (bridgeRequestId) => {
+            requestState.bridgeRequestId = bridgeRequestId;
+          },
+          requestState.bridgeRequestId
         );
         if (!controller.signal.aborted) {
-          panel.webview.postMessage({ type: "complete", requestId: msg.requestId, empty: !content });
+          panel.webview.postMessage({
+            type: "complete",
+            requestId: msg.requestId,
+            empty: !result.content,
+            receipt: summarizeWorkspaceReceipt(result.workspaceReceipt),
+          });
         }
       } catch (error) {
+        let receipt = error?.workspaceReceipt || null;
+        if (!receipt && requestState.bridgeRequestId) {
+          receipt = await fetchExecutionReceipt(requestState.bridgeRequestId);
+        }
+        const receiptSummary = summarizeWorkspaceReceipt(receipt);
+
         if (controller.signal.aborted || error?.name === "AbortError") {
-          panel.webview.postMessage({ type: "cancelled", requestId: msg.requestId });
+          panel.webview.postMessage({
+            type: "cancelled",
+            requestId: msg.requestId,
+            receipt: receiptSummary,
+          });
         } else {
-          panel.webview.postMessage({ type: "error", requestId: msg.requestId, text: error.message });
+          panel.webview.postMessage({
+            type: "error",
+            requestId: msg.requestId,
+            text: error.message,
+            receipt: receiptSummary,
+          });
         }
       } finally {
         activeRequests.delete(controller);
@@ -395,6 +460,12 @@ function activate(context) {
     vscode.commands.registerCommand("openCursor.selectAgent", async () => {
       const mode = await vscode.window.showQuickPick(
         [
+          { label: "Auto", description: "Side-effect-aware automatic routing", value: "auto" },
+          {
+            label: "Autonomous",
+            description: "Gemini auto-approved file edits and commands",
+            value: "autonomous",
+          },
           {
             label: "Collaborative",
             description: "Gemini Plan → Codex Implement → Gemini Review → Codex Refine",
@@ -405,8 +476,14 @@ function activate(context) {
             description: "Gemini Plan → Codex Implement",
             value: "pipeline",
           },
+          {
+            label: "MiMo + Gemini",
+            description: "Read-only plan/review + solution draft",
+            value: "mimo-gemini",
+          },
+          { label: "MiMo", description: "Read-only Xiaomi MiMo response", value: "mimo" },
           { label: "Codex Only", description: "ChatGPT/Codex subscription", value: "codex" },
-          { label: "Antigravity Only", description: "Gemini subscription", value: "antigravity" },
+          { label: "Antigravity Only", description: "Gemini explicit route", value: "antigravity" },
         ],
         { placeHolder: "Select agent routing mode" }
       );
@@ -455,6 +532,14 @@ function getChatHTML(webview) {
     .phase-pill.failed { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
     .assistant-body { padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .assistant-body.thinking { color: var(--vscode-descriptionForeground); font-style: italic; }
+    .workspace-receipt { margin: 0 10px 10px; padding: 9px 10px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editor-background); font-size: 11px; }
+    .receipt-title { font-weight: 600; margin-bottom: 4px; }
+    .receipt-summary { color: var(--vscode-foreground); margin-bottom: 5px; }
+    .receipt-safety, .receipt-note, .receipt-warning { color: var(--vscode-descriptionForeground); margin-top: 4px; }
+    .receipt-warning { color: var(--vscode-editorWarning-foreground); }
+    .receipt-group { margin-top: 6px; }
+    .receipt-group-label { font-weight: 600; color: var(--vscode-descriptionForeground); }
+    .receipt-paths { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--vscode-editor-font-family); }
     .error { color: var(--vscode-errorForeground); }
     #input-area { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: end; }
     #input { resize: vertical; min-height: 38px; max-height: 180px; padding: 8px; font-family: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
@@ -582,6 +667,59 @@ function getChatHTML(webview) {
       messages.scrollTop = messages.scrollHeight;
     }
 
+    function renderReceipt(summary) {
+      if (!summary || !assistantCard) return;
+      const box = document.createElement('div');
+      box.className = 'workspace-receipt';
+
+      const title = document.createElement('div');
+      title.className = 'receipt-title';
+      title.textContent = summary.title || 'Workspace receipt';
+      box.appendChild(title);
+
+      const summaryLine = document.createElement('div');
+      summaryLine.className = 'receipt-summary';
+      summaryLine.textContent = summary.summary || 'No receipt summary available';
+      box.appendChild(summaryLine);
+
+      const safety = document.createElement('div');
+      safety.className = 'receipt-safety';
+      safety.textContent = summary.rollbackPerformed
+        ? 'Rollback was performed.'
+        : 'Non-destructive observation · no automatic rollback';
+      box.appendChild(safety);
+
+      for (const group of Array.isArray(summary.groups) ? summary.groups : []) {
+        const groupNode = document.createElement('div');
+        groupNode.className = 'receipt-group';
+        const label = document.createElement('div');
+        label.className = 'receipt-group-label';
+        label.textContent = group.label || 'Paths';
+        const paths = document.createElement('pre');
+        paths.className = 'receipt-paths';
+        paths.textContent = Array.isArray(group.paths) ? group.paths.join('\n') : '';
+        groupNode.appendChild(label);
+        groupNode.appendChild(paths);
+        box.appendChild(groupNode);
+      }
+
+      if (summary.warning) {
+        const warning = document.createElement('div');
+        warning.className = 'receipt-warning';
+        warning.textContent = summary.warning;
+        box.appendChild(warning);
+      }
+      if (summary.note) {
+        const note = document.createElement('div');
+        note.className = 'receipt-note';
+        note.textContent = summary.note;
+        box.appendChild(note);
+      }
+
+      assistantCard.appendChild(box);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
     function ensurePhaseNode(phase) {
       if (!phase || !phaseStrip) return null;
       if (phaseNodes.has(phase)) return phaseNodes.get(phase);
@@ -693,6 +831,7 @@ function getChatHTML(webview) {
           assistantBody.textContent = msg.empty ? 'No response' : assistantBody.textContent;
           assistantBody.classList.remove('thinking');
         }
+        renderReceipt(msg.receipt);
         finish();
       } else if (msg.type === 'cancelled') {
         settleActivePhase('cancelled');
@@ -702,17 +841,20 @@ function getChatHTML(webview) {
           else assistantBody.textContent += '\n\n[Cancelled]';
           assistantBody.classList.remove('thinking');
         }
+        renderReceipt(msg.receipt);
         finish();
       } else if (msg.type === 'error') {
         settleActivePhase('failed');
         if (agentBadge) agentBadge.textContent = 'Failed';
         if (assistantBody) {
-          assistantBody.textContent = msg.text;
+          if (!receivedDelta) assistantBody.textContent = msg.text;
+          else assistantBody.textContent += '\n\n[Failed: ' + msg.text + ']';
           assistantBody.classList.remove('thinking');
           assistantBody.classList.add('error');
         } else {
           addMsg(msg.text, 'error');
         }
+        renderReceipt(msg.receipt);
         finish();
       }
     });

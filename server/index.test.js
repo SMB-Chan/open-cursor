@@ -10,6 +10,7 @@ import {
   formatCollaborativeResult,
   parseAgentSelection,
   rejectBrowserOrigin,
+  resolveRequestId,
   runProcess,
 } from "./index.js";
 import {
@@ -85,6 +86,20 @@ test("browser-origin execution requests are rejected", () => {
     (error) => error instanceof HttpError && error.statusCode === 403
   );
   assert.doesNotThrow(() => rejectBrowserOrigin({ headers: {} }));
+});
+
+test("request ids accept strict client UUIDs and reject arbitrary values", () => {
+  const id = "chatcmpl-123e4567-e89b-42d3-a456-426614174000";
+  assert.equal(resolveRequestId(id), id);
+  assert.match(resolveRequestId(undefined), /^chatcmpl-[0-9a-f-]{36}$/i);
+  assert.throws(
+    () => resolveRequestId("../../receipt"),
+    (error) => error instanceof HttpError && error.statusCode === 400
+  );
+  assert.throws(
+    () => resolveRequestId("chatcmpl-not-a-uuid"),
+    (error) => error instanceof HttpError && error.statusCode === 400
+  );
 });
 
 test("prompt builder preserves context and rejects unsupported roles", () => {
