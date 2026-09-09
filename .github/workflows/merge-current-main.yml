@@ -24,7 +24,34 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main
-          git merge --no-ff --no-edit origin/main
+          if ! git merge --no-ff --no-edit origin/main; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ "$conflicts" != "server/package.json" ]; then
+              echo "Unexpected merge conflicts:"
+              printf '%s\n' "$conflicts"
+              exit 1
+            fi
+            cat > server/package.json <<'JSON'
+          {
+            "name": "open-cursor-bridge",
+            "version": "2.4.0",
+            "type": "module",
+            "description": "Multi-agent coding bridge with subscription-backed local agents and optional external remote providers.",
+            "main": "index.js",
+            "scripts": {
+              "start": "node index.js",
+              "dev": "node --watch index.js",
+              "check": "node --check config.js && node --check index.js && node --check engine.js && node --check context.js && node --check compressor.js && node --check receipt.js && node --check config.test.js && node --check index.test.js && node --check context.test.js && node --check engine.test.js && node --check routing-safety.test.js && node --check compressor.test.js && node --check receipt.test.js",
+              "test": "node --test config.test.js index.test.js context.test.js engine.test.js routing-safety.test.js compressor.test.js receipt.test.js"
+            },
+            "engines": {
+              "node": ">=18"
+            }
+          }
+          JSON
+            git add server/package.json
+            git commit --no-edit
+          fi
 
       - name: Verify server
         working-directory: server
