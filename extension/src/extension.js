@@ -4,13 +4,38 @@
  */
 
 const vscode = require("vscode");
-const { spawn } = require("node:child_process");
+const { spawn, execSync } = require("node:child_process");
 const path = require("node:path");
+const fs = require("node:fs");
+const os = require("node:os");
 const { randomBytes } = require("node:crypto");
 
 const DEFAULT_PORT = 9876;
 const HEALTH_TIMEOUT_MS = 1500;
 const STARTUP_TIMEOUT_MS = 10000;
+
+function resolveNodeExecutable() {
+  const configured = config().get("nodePath", "node") || "node";
+  if (configured !== "node") return configured;
+
+  try {
+    execSync("node --version", { stdio: "ignore" });
+    return "node";
+  } catch {}
+
+  const nvmDir = path.join(os.homedir(), ".nvm", "versions", "node");
+  try {
+    if (fs.existsSync(nvmDir)) {
+      const versions = fs.readdirSync(nvmDir).sort();
+      for (let i = versions.length - 1; i >= 0; i--) {
+        const candidate = path.join(nvmDir, versions[i], "bin", "node");
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    }
+  } catch {}
+
+  return "node";
+}
 
 let bridgeProcess = null;
 let bridgeStartPromise = null;
@@ -141,13 +166,29 @@ async function startManagedBridge(context, { notify = true } = {}) {
     updateStatus("starting");
 
     const serverDir = path.resolve(context.extensionPath, "..", "server");
-    const nodePath = config().get("nodePath", "node") || "node";
+    const nodePath = resolveNodeExecutable();
     const port = String(config().get("bridgePort", DEFAULT_PORT));
+
+    const userLocalBin = path.join(os.homedir(), ".local", "bin");
+    const currentPath = process.env.PATH || "";
+    const nodeBinDir = nodePath !== "node" && path.isAbsolute(nodePath) ? path.dirname(nodePath) : "";
+    let combinedPath = currentPath;
+    if (!combinedPath.includes(userLocalBin)) {
+      combinedPath = `${userLocalBin}:${combinedPath}`;
+    }
+    if (nodeBinDir && !combinedPath.includes(nodeBinDir)) {
+      combinedPath = `${nodeBinDir}:${combinedPath}`;
+    }
 
     outputChannel?.appendLine(`[bridge] starting ${nodePath} index.js in ${serverDir}`);
     const child = spawn(nodePath, ["index.js"], {
       cwd: serverDir,
-      env: { ...process.env, BRIDGE_PORT: port, BRIDGE_HOST: "127.0.0.1" },
+      env: {
+        ...process.env,
+        PATH: combinedPath,
+        BRIDGE_PORT: port,
+        BRIDGE_HOST: "127.0.0.1",
+      },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
