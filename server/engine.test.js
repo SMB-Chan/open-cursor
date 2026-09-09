@@ -8,6 +8,7 @@ import {
   buildRefinementPrompt,
   buildReviewPrompt,
   formatCollaborativeResult,
+  getResolvedModelsForMode,
 } from "./engine.js";
 
 test("planning prompt treats repository context as untrusted detached data", () => {
@@ -88,4 +89,20 @@ test("collaborative result exposes all four ordered stages", () => {
 test("continuation requests choose the collaborative quality loop", () => {
   assert.equal(analyzeTask("続行せよ").routing, "collaborative");
   assert.equal(analyzeTask("continue and then verify the result").routing, "collaborative");
+});
+
+test("getResolvedModelsForMode exposes concrete model IDs for collaborative and auto modes", () => {
+  const collab = getResolvedModelsForMode("collaborative");
+  assert.deepEqual(collab.activeModels, ["gemini-3.1-pro-high", "gpt-6-astra"]);
+  assert.equal(collab.primaryModelId, "gemini-3.1-pro-high");
+  assert.equal(collab.secondaryModelId, "gpt-6-astra");
+
+  const codex = getResolvedModelsForMode("codex");
+  assert.deepEqual(codex.activeModels, ["gpt-6-astra"]);
+
+  const gemini = getResolvedModelsForMode("antigravity");
+  assert.deepEqual(gemini.activeModels, ["gemini-3.1-pro-high"]);
+
+  const autoAutonomous = getResolvedModelsForMode("autonomous");
+  assert.deepEqual(autoAutonomous.activeModels, ["gemini-3.1-pro-high"]);
 });

@@ -1,0 +1,226 @@
+#!/usr/bin/env node
+
+/**
+ * usage - LLM Quota & Usage Inspector for Open-Cursor
+ *
+ * Checks live remaining quota, 3-hour rolling windows, rate-limits,
+ * and concrete model IDs for OpenAI Codex, Google Gemini, and Xiaomi MiMo.
+ */
+
+import { execSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+const home = homedir();
+
+export function getCodexUsage() {
+  const modelId = "gpt-6-astra";
+  const defaultLimit = 50;
+  let usedIn3h = 0;
+  let resetTime = null;
+  let isRateLimited = false;
+  let limitMessage = null;
+
+  // 1. Check sqlite turns in the last 3 hours
+  const dbPath = join(home, ".codex", "thread_history_1.sqlite");
+  if (existsSync(dbPath)) {
+    try {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const threeHoursAgo = nowSec - 3 * 3600;
+      const cmd = `sqlite3 "${dbPath}" "SELECT count(*), min(started_at) FROM thread_turns WHERE started_at > ${threeHoursAgo};"`;
+      const out = execSync(cmd, { stdio: ["pipe", "pipe", "ignore"], timeout: 2000 }).toString().trim();
+      const [countStr, earliestStr] = out.split("|");
+      usedIn3h = parseInt(countStr, 10) || 0;
+      if (earliestStr && parseInt(earliestStr, 10) > 0) {
+        const earliestSec = parseInt(earliestStr, 10);
+        const resetEpochMs = (earliestSec + 3 * 3600) * 1000;
+        resetTime = new Date(resetEpochMs).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+      }
+    } catch {}
+  }
+
+  // 2. Check bridge log for recent rate limit messages
+  const bridgeLogPath = join(home, ".cursor-codex-bridge", "bridge.log");
+  if (existsSync(bridgeLogPath)) {
+    try {
+      const tail = execSync(`tail -n 100 "${bridgeLogPath}"`, { stdio: ["pipe", "pipe", "ignore"] }).toString();
+      const match = tail.match(/try again at ([0-9]{1,2}:[0-9]{2}\s*(?:AM|PM)?)/i);
+      if (match) {
+        isRateLimited = true;
+        limitMessage = `${match[1]} まで制限中`;
+      }
+    } catch {}
+  }
+
+  const remaining = Math.max(0, defaultLimit - usedIn3h);
+  const percent = Math.round((remaining / defaultLimit) * 100);
+
+  return {
+    provider: "OpenAI Codex",
+    modelId,
+    displayName: "GPT-6-Astra",
+    planType: "ChatGPT Plus / Pro 定額",
+    billing: "定額サブスク（追加課金なし）",
+    status: isRateLimited ? "RATE_LIMITED" : "READY",
+    quota: {
+      used: usedIn3h,
+      limit: defaultLimit,
+      remaining,
+      percent,
+      window: "3時間ローリング枠",
+      resetTime: limitMessage || resetTime || "フル枠利用可能",
+      summary: isRateLimited
+        ? `制限中 (${limitMessage})`
+        : `${remaining}/${defaultLimit}回 残り (${percent}%) · リセット: ${resetTime || "自動回復"}`,
+    },
+  };
+}
+
+export function getGeminiUsage() {
+  const modelId = "gemini-3.1-pro-high";
+  const flashModelId = "gemini-3.8-flash-high";
+  const dailyLimit = 1500;
+  let turnsToday = 0;
+
+  // Count history from today in antigravity-cli
+  const historyPath = join(home, ".gemini", "antigravity-cli", "history.jsonl");
+  if (existsSync(historyPath)) {
+    try {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const todayTs = todayStart.getTime();
+      const content = readFileSync(historyPath, "utf-8");
+      const lines = content.trim().split("\n");
+      for (const line of lines) {
+        if (!line) continue;
+        try {
+          const item = JSON.parse(line);
+          if (item.timestamp && item.timestamp >= todayTs) {
+            turnsToday++;
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  const remaining = Math.max(0, dailyLimit - turnsToday);
+  const percent = Math.round((remaining / dailyLimit) * 100);
+
+  return {
+    provider: "Google Gemini",
+    modelId,
+    flashModelId,
+    displayName: "Gemini 3.1 Pro (High)",
+    planType: "Google One AI Pro 定額",
+    billing: "定額サブスク（追加課金なし）",
+    status: "READY",
+    quota: {
+      usedToday: turnsToday,
+      limit: dailyLimit,
+      remaining,
+      percent,
+      window: "高速クォータ (日次リセット)",
+      resetTime: "00:00 自動リセット",
+      summary: `高速枠 残り ${percent}% (${turnsToday}回本日利用 / 上限${dailyLimit})`,
+    },
+  };
+}
+
+export function getMiMoUsage() {
+  const modelId = "mimo-v2.5-pro";
+  let hasKey = Boolean(process.env.MIMO_API_KEY);
+  if (!hasKey) {
+    try {
+      const envPath = join(home, ".local/share/cursor-open-providers/continue/.env");
+      if (existsSync(envPath)) {
+        const c = readFileSync(envPath, "utf-8");
+        hasKey = /PROVIDER_0_API_KEY=["']?[^"'\n\r]+/.test(c);
+      }
+    } catch {}
+  }
+
+  return {
+    provider: "Xiaomi MiMo",
+    modelId,
+    displayName: "Xiaomi MiMo v2.5 Pro",
+    planType: "MiMo Token Plan API",
+    billing: "トークンプラン (API Key)",
+    status: hasKey ? "READY" : "NO_KEY",
+    quota: {
+      type: "APIトークン残高",
+      status: hasKey ? "API Key 認証正常 (有効)" : "未設定",
+      summary: hasKey ? "APIトークンプラン有効 · 従量残高利用" : "API Key が未設定です",
+    },
+  };
+}
+
+export function getAllUsage() {
+  if (process.env.OPEN_CURSOR_USAGE_CMD && process.env.OPEN_CURSOR_USAGE_CMD !== "usage") {
+    try {
+      const out = execSync(process.env.OPEN_CURSOR_USAGE_CMD, {
+        stdio: ["pipe", "pipe", "ignore"],
+        timeout: 3000,
+      }).toString();
+      try {
+        const parsed = JSON.parse(out);
+        if (parsed && typeof parsed === "object") return parsed;
+      } catch {}
+    } catch {}
+  }
+
+  return {
+    timestamp: new Date().toISOString(),
+    codex: getCodexUsage(),
+    antigravity: getGeminiUsage(),
+    mimo: getMiMoUsage(),
+  };
+}
+
+function renderBar(percent, width = 12) {
+  const p = Math.max(0, Math.min(100, Number(percent) || 0));
+  const filled = Math.round((p / 100) * width);
+  const empty = width - filled;
+  return `[${"▰".repeat(filled)}${"▱".repeat(empty)}] ${p}%`;
+}
+
+function printText(usage) {
+  const CYAN = "\x1b[36m";
+  const GREEN = "\x1b[32m";
+  const YELLOW = "\x1b[33m";
+  const BOLD = "\x1b[1m";
+  const DIM = "\x1b[2m";
+  const RESET = "\x1b[0m";
+
+  console.log(`${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════════════════════╗${RESET}`);
+  console.log(`${CYAN}${BOLD}║  📊 LLM 利用残量・クォータステータス (usage コマンド)                         ║${RESET}`);
+  console.log(`${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════════════════════╝${RESET}`);
+
+  // Codex
+  const c = usage.codex;
+  console.log(`\n  ${GREEN}●${RESET} ${BOLD}${c.provider}${RESET} [モデルID: ${CYAN}${c.modelId}${RESET}] · ${DIM}${c.planType}${RESET}`);
+  console.log(`    残量: ${BOLD}${c.quota.summary}${RESET}  ${renderBar(c.quota.percent)}`);
+  console.log(`    課金: ${GREEN}${c.billing}${RESET} (${c.quota.window})`);
+
+  // Gemini
+  const g = usage.antigravity;
+  console.log(`\n  ${GREEN}●${RESET} ${BOLD}${g.provider}${RESET} [モデルID: ${CYAN}${g.modelId}${RESET}] · ${DIM}${g.planType}${RESET}`);
+  console.log(`    残量: ${BOLD}${g.quota.summary}${RESET}  ${renderBar(g.quota.percent)}`);
+  console.log(`    課金: ${GREEN}${g.billing}${RESET} (${g.quota.window})`);
+
+  // MiMo
+  const m = usage.mimo;
+  console.log(`\n  ${YELLOW}●${RESET} ${BOLD}${m.provider}${RESET} [モデルID: ${CYAN}${m.modelId}${RESET}] · ${DIM}${m.planType}${RESET}`);
+  console.log(`    状態: ${BOLD}${m.quota.summary}${RESET}`);
+  console.log(`    課金: ${YELLOW}${m.billing}${RESET}`);
+  console.log("");
+}
+
+if (process.argv[1] && (process.argv[1].endsWith("usage") || process.argv[1].endsWith("usage.js"))) {
+  const usage = getAllUsage();
+  if (process.argv.includes("--json")) {
+    console.log(JSON.stringify(usage, null, 2));
+  } else {
+    printText(usage);
+  }
+}

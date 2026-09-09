@@ -14,6 +14,12 @@ let inMemoryState = {
   active: false,
   agent: null,
   mode: "idle",
+  selectedMode: null,
+  autoMode: false,
+  phase: null,
+  modelId: null,
+  modelDisplayName: null,
+  activeModels: [],
   step: 0,
   progress: 0,
   currentAction: "待機中 (アイドル)",
@@ -64,52 +70,83 @@ export async function loadState() {
   return inMemoryState;
 }
 
+export async function fetchUsageData() {
+  const usageCmd = process.env.OPEN_CURSOR_USAGE_CMD || "usage --json";
+  try {
+    const { stdout } = await execAsync(usageCmd, { timeout: 3000 });
+    const parsed = JSON.parse(stdout);
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch {}
+  return null;
+}
+
 export async function getLLMStatus() {
+  const usage = await fetchUsageData();
+  const c = usage?.codex;
+  const g = usage?.antigravity;
+  const m = usage?.mimo;
+
   return {
     codex: {
       name: "OpenAI Codex",
       provider: "OpenAI",
-      planType: "ChatGPT Plus / Team / Pro サブスクリプション",
-      billing: "定額サブスク（追加課金なし）",
+      modelId: c?.modelId || "gpt-6-astra",
+      displayName: c?.displayName || "GPT-6-Astra",
+      planType: c?.planType || "ChatGPT Plus / Team / Pro サブスクリプション",
+      billing: c?.billing || "定額サブスク（追加課金なし）",
       authMode: "ChatGPT Auth (OAuth Token)",
-      status: "READY",
+      status: c?.status || "READY",
       quota: {
         type: "定額枠 (Plus/Pro)",
-        limit: "ChatGPT 利用枠に準拠 (従量課金ゼロ)",
-        resetInfo: "3時間サイクルで枠自動回復",
-        rateLimitStatus: "正常稼働中 (OK)",
+        limit: c?.quota?.summary || "ChatGPT 利用枠に準拠 (従量課金ゼロ)",
+        used: c?.quota?.used ?? 0,
+        remaining: c?.quota?.remaining ?? 50,
+        percent: c?.quota?.percent ?? 100,
+        resetInfo: c?.quota?.resetTime || "3時間サイクルで枠自動回復",
+        rateLimitStatus: c?.status === "RATE_LIMITED" ? "制限中" : "正常稼働中 (OK)",
+        summary: c?.quota?.summary || "50/50回 残り (100%)",
       },
       models: ["gpt-6-astra", "o3-mini", "codex"],
     },
     antigravity: {
       name: "Google Gemini",
       provider: "Google DeepMind / Gemini",
-      planType: "Google One AI Pro サブスクリプション",
-      billing: "定額サブスク（追加課金なし）",
+      modelId: g?.modelId || "gemini-3.1-pro-high",
+      displayName: g?.displayName || "Gemini 3.1 Pro (High)",
+      planType: g?.planType || "Google One AI Pro サブスクリプション",
+      billing: g?.billing || "定額サブスク（追加課金なし）",
       authMode: "Google Account (Antigravity CLI)",
-      status: "READY",
+      status: g?.status || "READY",
       quota: {
         type: "定額枠 (AI Pro / Advanced)",
-        limit: "Antigravity 高速クォータ内 (従量課金ゼロ)",
-        resetInfo: "日次/時間枠自動リセット",
+        limit: g?.quota?.summary || "Antigravity 高速クォータ内 (従量課金ゼロ)",
+        used: g?.quota?.usedToday ?? 0,
+        remaining: g?.quota?.remaining ?? 1500,
+        percent: g?.quota?.percent ?? 100,
+        resetInfo: g?.quota?.resetTime || "日次/時間枠自動リセット",
         rateLimitStatus: "正常稼働中 (OK)",
+        summary: g?.quota?.summary || "高速クォータ内 (正常稼働)",
       },
       models: ["Gemini 3.1 Pro (High)", "Gemini 3.8 Flash (High)"],
     },
     mimo: {
       name: "Xiaomi MiMo",
       provider: "Xiaomi Token Plan",
-      planType: "MiMo Token Plan API",
-      billing: "トークンプラン (API Key)",
+      modelId: m?.modelId || "mimo-v2.5-pro",
+      displayName: m?.displayName || "Xiaomi MiMo v2.5 Pro",
+      planType: m?.planType || "MiMo Token Plan API",
+      billing: m?.billing || "トークンプラン (API Key)",
       authMode: "API Key (continue/.env)",
-      status: "READY",
+      status: m?.status || "READY",
       quota: {
         type: "トークンプラン残高",
-        limit: "APIトークン残量準拠",
+        limit: m?.quota?.summary || "APIトークン残量準拠",
         rateLimitStatus: "接続正常 (OK)",
+        summary: m?.quota?.summary || "APIトークンプラン有効",
       },
       models: ["mimo-v2.5-pro"],
     },
+    usageSource: usage ? "usage-command" : "builtin",
   };
 }
 

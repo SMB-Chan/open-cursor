@@ -102,27 +102,60 @@ function loadLocalFallback(targetWorkspace) {
     recentFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
   } catch {}
 
+  let usageData = null;
+  try {
+    const usageOut = execSync("usage --json", { timeout: 2000, stdio: ["pipe", "pipe", "ignore"] }).toString();
+    usageData = JSON.parse(usageOut);
+  } catch {
+    try {
+      const usageBin = path.join(__dirname, "usage");
+      const usageOut = execSync(`node "${usageBin}" --json`, { timeout: 2000, stdio: ["pipe", "pipe", "ignore"] }).toString();
+      usageData = JSON.parse(usageOut);
+    } catch {}
+  }
+
+  const cUsage = usageData?.codex;
+  const gUsage = usageData?.antigravity;
+  const mUsage = usageData?.mimo;
+
   return {
     timestamp: new Date().toISOString(),
     llm: {
       codex: {
         name: "OpenAI Codex",
-        billing: "定額サブスク（追加課金なし）",
-        status: "READY",
-        quota: { limit: "ChatGPT利用枠準拠 (Plus/Pro定額)", resetInfo: "3時間サイクル自動回復" }
+        modelId: cUsage?.modelId || "gpt-6-astra",
+        displayName: cUsage?.displayName || "GPT-6-Astra",
+        billing: cUsage?.billing || "定額サブスク（追加課金なし）",
+        status: cUsage?.status || "READY",
+        quota: {
+          limit: cUsage?.quota?.summary || "50/50回 残り (100%)",
+          resetInfo: cUsage?.quota?.resetTime || "3時間サイクル自動回復",
+          percent: cUsage?.quota?.percent ?? 100,
+        },
       },
       antigravity: {
         name: "Google Gemini",
-        billing: "定額サブスク（追加課金なし）",
-        status: "READY",
-        quota: { limit: "Google One AI Pro (高速クォータ内)", resetInfo: "日次/時間枠自動リセット" }
+        modelId: gUsage?.modelId || "gemini-3.1-pro-high",
+        displayName: gUsage?.displayName || "Gemini 3.1 Pro (High)",
+        billing: gUsage?.billing || "定額サブスク（追加課金なし）",
+        status: gUsage?.status || "READY",
+        quota: {
+          limit: gUsage?.quota?.summary || "高速クォータ内 (正常稼働)",
+          resetInfo: gUsage?.quota?.resetTime || "日次/時間枠自動リセット",
+          percent: gUsage?.quota?.percent ?? 100,
+        },
       },
       mimo: {
         name: "Xiaomi MiMo",
-        billing: "トークンプラン (API Key)",
-        status: "READY",
-        quota: { limit: "APIトークン残量準拠", resetInfo: "従量トークン" }
-      }
+        modelId: mUsage?.modelId || "mimo-v2.5-pro",
+        displayName: mUsage?.displayName || "Xiaomi MiMo v2.5 Pro",
+        billing: mUsage?.billing || "トークンプラン (API Key)",
+        status: mUsage?.status || "READY",
+        quota: {
+          limit: mUsage?.quota?.summary || "APIトークン残量準拠",
+          resetInfo: "従量トークン",
+        },
+      },
     },
     workspace: {
       workspacePath: ws,
@@ -169,15 +202,19 @@ function renderScreen(data) {
   out += `${CYAN}${BOLD}${boxMid}${RESET}\n`;
 
   // 1. LLM Status Section
-  out += `${BOLD}  🤖 LLM 利用状況・残量ステータス (Zero-Cost / Subscription)${RESET}\n`;
-  out += `  ${GREEN}●${RESET} ${BOLD}OpenAI Codex${RESET}    : ${GREEN}READY${RESET} · ${CYAN}${llm.codex?.billing || "定額サブスク"}${RESET}\n`;
-  out += `    └─ 利用枠: ${DIM}${llm.codex?.quota?.limit || "ChatGPT利用枠"} (${llm.codex?.quota?.resetInfo || "自動回復"})${RESET}\n`;
+  out += `${BOLD}  🤖 LLM 利用残量・クォータ [usage コマンド連携]${RESET}\n`;
+  const cModel = llm.codex?.modelId ? `[${llm.codex.modelId}]` : "";
+  const gModel = llm.antigravity?.modelId ? `[${llm.antigravity.modelId}]` : "";
+  const mModel = llm.mimo?.modelId ? `[${llm.mimo.modelId}]` : "";
 
-  out += `  ${GREEN}●${RESET} ${BOLD}Google Gemini${RESET}   : ${GREEN}READY${RESET} · ${CYAN}${llm.antigravity?.billing || "定額サブスク"}${RESET}\n`;
-  out += `    └─ 利用枠: ${DIM}${llm.antigravity?.quota?.limit || "Google One AI Pro"} (${llm.antigravity?.quota?.resetInfo || "自動リセット"})${RESET}\n`;
+  out += `  ${GREEN}●${RESET} ${BOLD}OpenAI Codex${RESET}  ${CYAN}${cModel.padEnd(23)}${RESET}: ${GREEN}${llm.codex?.status || "READY"}${RESET} · ${CYAN}${llm.codex?.billing || "定額サブスク"}${RESET}\n`;
+  out += `    └─ 残量: ${BOLD}${llm.codex?.quota?.limit || llm.codex?.quota?.summary || "ChatGPT利用枠"}${RESET} ${DIM}(${llm.codex?.quota?.resetInfo || "自動回復"})${RESET}\n`;
 
-  out += `  ${YELLOW}●${RESET} ${BOLD}Xiaomi MiMo${RESET}     : ${GREEN}READY${RESET} · ${YELLOW}${llm.mimo?.billing || "トークンプラン"}${RESET}\n`;
-  out += `    └─ 利用枠: ${DIM}${llm.mimo?.quota?.limit || "APIトークン"}${RESET}\n`;
+  out += `  ${GREEN}●${RESET} ${BOLD}Google Gemini${RESET} ${CYAN}${gModel.padEnd(23)}${RESET}: ${GREEN}${llm.antigravity?.status || "READY"}${RESET} · ${CYAN}${llm.antigravity?.billing || "定額サブスク"}${RESET}\n`;
+  out += `    └─ 残量: ${BOLD}${llm.antigravity?.quota?.limit || llm.antigravity?.quota?.summary || "Google One AI Pro"}${RESET} ${DIM}(${llm.antigravity?.quota?.resetInfo || "自動リセット"})${RESET}\n`;
+
+  out += `  ${YELLOW}●${RESET} ${BOLD}Xiaomi MiMo${RESET}   ${CYAN}${mModel.padEnd(23)}${RESET}: ${GREEN}${llm.mimo?.status || "READY"}${RESET} · ${YELLOW}${llm.mimo?.billing || "トークンプラン"}${RESET}\n`;
+  out += `    └─ 残量: ${BOLD}${llm.mimo?.quota?.limit || llm.mimo?.quota?.summary || "APIトークン"}${RESET}\n`;
 
   out += `${CYAN}${BOLD}${boxMid}${RESET}\n`;
 
@@ -185,13 +222,23 @@ function renderScreen(data) {
   out += `${BOLD}  ⚡ 自律エージェントの現在のアクティビティ${RESET}\n`;
   if (exec.active) {
     const bar = renderBar(exec.progress || (10 + (exec.step || 1) * 6));
-    out += `  ${MAGENTA}${BOLD}▶ 実行中 [${exec.mode || "自律"}]${RESET}  進捗: ${CYAN}${BOLD}${bar}${RESET}\n`;
+    const modeName = exec.autoMode ? `自動判別 (Auto) ➔ ${exec.selectedMode || exec.mode}` : (exec.mode || "自律");
+    out += `  ${MAGENTA}${BOLD}▶ 実行中 [${modeName}]${RESET}  進捗: ${CYAN}${BOLD}${bar}${RESET}\n`;
+    if (exec.modelId) {
+      out += `  稼働モデルID  : ${CYAN}${BOLD}🎯 ${exec.modelId}${RESET} ${DIM}(${exec.modelDisplayName || exec.agent || ""})${RESET}\n`;
+    }
+    if (Array.isArray(exec.activeModels) && exec.activeModels.length > 1) {
+      out += `  協調モデル構成: ${DIM}${exec.activeModels.join(" ➔ ")}${RESET}\n`;
+    }
     out += `  現在アクション: ${BOLD}${exec.currentAction || "処理中..."}${RESET}\n`;
     if (exec.targetFile) {
       out += `  操作ファイル  : ${YELLOW}${BOLD}📄 ${exec.targetFile}${RESET}\n`;
     }
   } else {
     out += `  ${DIM}○ アイドル待機中 (直近の自律処理は完了しています)${RESET}\n`;
+    if (exec.modelId) {
+      out += `  最終稼働モデル: ${DIM}🎯 ${exec.modelId} (${exec.modelDisplayName || exec.agent || ""})${RESET}\n`;
+    }
     if (exec.targetFile) {
       out += `  最終更新ファイル: ${YELLOW}${BOLD}📄 ${exec.targetFile}${RESET}\n`;
     }

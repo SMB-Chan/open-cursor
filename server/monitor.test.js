@@ -34,11 +34,15 @@ test("updateExecutionState updates in-memory state and prepends recent steps", (
   assert.equal(state.recentSteps[0].action, "Web調査");
 });
 
-test("getLLMStatus reports all three providers and quota types", async () => {
+test("getLLMStatus reports all three providers, concrete model IDs and quota types", async () => {
   const llm = await getLLMStatus();
   assert.ok(llm.codex);
   assert.ok(llm.antigravity);
   assert.ok(llm.mimo);
+
+  assert.equal(llm.codex.modelId, "gpt-6-astra");
+  assert.equal(llm.antigravity.modelId, "gemini-3.1-pro-high");
+  assert.equal(llm.mimo.modelId, "mimo-v2.5-pro");
 
   assert.equal(llm.codex.status, "READY");
   assert.match(llm.codex.billing, /定額サブスク/);

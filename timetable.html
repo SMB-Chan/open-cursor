@@ -150,13 +150,16 @@
     <!-- 行き（OUTWARD） -->
     <div id="outward" class="tab-content active">
         <div class="search-box">
-            <label for="timeInputOutward">到着希望時刻 (西富井/穴場神社前):</label>
+            <button class="btn-now" onclick="findNextRideOutwardNow()">現在時刻+20分で出発検索</button>
+            
+            <hr style="margin: 20px 0; border: none; border-top: 1px dashed #ccc;">
+            
+            <label for="timeInputOutward">最終目的地への到着希望時刻:</label>
             <div class="input-group">
                 <input type="time" id="timeInputOutward">
-                <button onclick="findRideBackwardOutward()">逆算検索</button>
+                <button onclick="findRideBackwardOutward()" style="background-color: #8e44ad;">いつ出発すべきか検索</button>
             </div>
-            <hr style="margin: 15px 0; border: none; border-top: 1px solid #eee;">
-            <button class="btn-now" onclick="findNextRideOutwardNow()">現在時刻+20分で出発検索</button>
+            
             <div id="resultBoxOutward" class="resultBox"></div>
         </div>
 
@@ -231,13 +234,16 @@
     <!-- 帰り（RETURN） -->
     <div id="return" class="tab-content">
         <div class="search-box">
-            <label for="timeInputReturn">到着希望時刻 (西阿知):</label>
+            <button class="btn-now" onclick="findNextRideReturnNow()">現在時刻+20分で出発検索</button>
+            
+            <hr style="margin: 20px 0; border: none; border-top: 1px dashed #ccc;">
+            
+            <label for="timeInputReturn">最終目的地(西阿知)への到着希望時刻:</label>
             <div class="input-group">
                 <input type="time" id="timeInputReturn">
-                <button onclick="findRideBackwardReturn()">逆算検索</button>
+                <button onclick="findRideBackwardReturn()" style="background-color: #8e44ad;">いつ出発すべきか検索</button>
             </div>
-            <hr style="margin: 15px 0; border: none; border-top: 1px solid #eee;">
-            <button class="btn-now" onclick="findNextRideReturnNow()">現在時刻+20分で出発検索</button>
+            
             <div id="resultBoxReturn" class="resultBox"></div>
         </div>
 
@@ -384,14 +390,7 @@
             return bestRide;
         }
 
-        function formatTime() {
-            const now = new Date();
-            now.setMinutes(now.getMinutes() + 20);
-            const hours = String(now.getHours()).padStart(2, '0');
-            const minutes = String(now.getMinutes()).padStart(2, '0');
-            document.getElementById('timeInputOutward').value = `${hours}:${minutes}`;
-            document.getElementById('timeInputReturn').value = `${hours}:${minutes}`;
-        }
+
 
         function scrollRowToCenter(row) {
             const wrap = row.closest('.table-wrap');
@@ -658,8 +657,7 @@
             resultBox.innerHTML = recommendation;
         }
 
-        // 初期表示時に現在時刻をセット
-        window.onload = formatTime;
+        // 初期表示時の時刻セットは削除 (到着時刻のデフォルトが現在時刻+20分だと不自然なため)
     </script>
 </body>
 </html>

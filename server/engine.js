@@ -534,21 +534,73 @@ function emitHeader(onEvent, text, agent, phase) {
   onEvent?.({ text, agent, phase });
 }
 
+export function getResolvedModelsForMode(targetMode, targetModel) {
+  switch (targetMode) {
+    case "collaborative":
+      return {
+        activeModels: ["gemini-3.1-pro-high", targetModel || "gpt-6-astra"],
+        primaryModelId: "gemini-3.1-pro-high",
+        secondaryModelId: targetModel || "gpt-6-astra",
+        description: "Gemini 3.1 Pro (計画/検証) ➔ gpt-6-astra (実装/修正)",
+      };
+    case "codex":
+      return {
+        activeModels: [targetModel || "gpt-6-astra"],
+        primaryModelId: targetModel || "gpt-6-astra",
+        description: `OpenAI Codex (${targetModel || "gpt-6-astra"})`,
+      };
+    case "antigravity": {
+      const resolved = mapAntigravityModel(targetModel) || "Gemini 3.1 Pro (High)";
+      const modelId = targetModel === "flash" ? "gemini-3.8-flash-high" : "gemini-3.1-pro-high";
+      return {
+        activeModels: [modelId],
+        primaryModelId: modelId,
+        description: `Google Gemini (${resolved})`,
+      };
+    }
+    case "autonomous":
+      return {
+        activeModels: ["gemini-3.1-pro-high"],
+        primaryModelId: "gemini-3.1-pro-high",
+        description: "Google Gemini 3.1 Pro (自律ツール実行)",
+      };
+    case "mimo-gemini":
+      return {
+        activeModels: ["gemini-3.1-pro-high", "mimo-v2.5-pro"],
+        primaryModelId: "gemini-3.1-pro-high",
+        secondaryModelId: "mimo-v2.5-pro",
+        description: "Gemini 3.1 Pro (分析) ➔ Xiaomi MiMo v2.5 Pro (解決案生成)",
+      };
+    case "mimo":
+      return {
+        activeModels: [targetModel || "mimo-v2.5-pro"],
+        primaryModelId: targetModel || "mimo-v2.5-pro",
+        description: `Xiaomi MiMo (${targetModel || "mimo-v2.5-pro"})`,
+      };
+    default:
+      return {
+        activeModels: [targetModel || "auto"],
+        primaryModelId: targetModel || "auto",
+        description: targetMode,
+      };
+  }
+}
+
 function formatCollaborativeResult({ plan, implementation, review, refinement }) {
   return [
-    `> 📊 **【進捗 1/4】** \`[▰▰▱▱▱▱▱▱] 25%\` ── **計画・設計フェーズ (Gemini Pro)**\n` +
+    `> 📊 **【進捗 1/4】** \`[▰▰▱▱▱▱▱▱] 25%\` ── **計画・設計フェーズ** (モデルID: \`gemini-3.1-pro-high\`)\n` +
     `> 💭 **【推論要約】** ワークスペース構造を分析し、変更対象ファイル・アーキテクチャ制約・実装計画を策定しました。\n\n` +
     `## Plan (Gemini/Antigravity)\n${clipText(plan, 64 * 1024)}`,
 
-    `> 💻 **【進捗 2/4】** \`[▰▰▰▰▱▱▱▱] 50%\` ── **自律実装フェーズ (OpenAI Codex)**\n` +
+    `> 💻 **【進捗 2/4】** \`[▰▰▰▰▱▱▱▱] 50%\` ── **自律実装フェーズ** (モデルID: \`gpt-6-astra\`)\n` +
     `> 🔨 **【推論要約】** 計画に基づき、コードの編集・作成およびテスト検証を自律実行しました。\n\n` +
     `## Implementation (Codex/GPT)\n${clipText(implementation, 64 * 1024)}`,
 
-    `> 🔍 **【進捗 3/4】** \`[▰▰▰▰▰▰▱▱] 75%\` ── **独立検査フェーズ (Gemini Pro)**\n` +
+    `> 🔍 **【進捗 3/4】** \`[▰▰▰▰▰▰▱▱] 75%\` ── **独立検査フェーズ** (モデルID: \`gemini-3.1-pro-high\`)\n` +
     `> 🔎 **【推論要約】** 実装によるGit差分とテスト結果を読み取り専用の隔離環境で検査し、品質と安全性を検証しました。\n\n` +
     `## Review (Gemini/Antigravity)\n${clipText(review, 64 * 1024)}`,
 
-    `> ✨ **【進捗 4/4】** \`[▰▰▰▰▰▰▰▰] 100%\` ── **修正・仕上げフェーズ (OpenAI Codex)**\n` +
+    `> ✨ **【進捗 4/4】** \`[▰▰▰▰▰▰▰▰] 100%\` ── **修正・仕上げフェーズ** (モデルID: \`gpt-6-astra\`)\n` +
     `> 🛠️ **【推論要約】** レビューで指摘された改善項目の反映と最終調整を実行しました。\n\n` +
     `## Refinement (Codex/GPT)\n${clipText(refinement, 64 * 1024)}`,
   ].join("\n\n---\n\n");
@@ -580,10 +632,23 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
     selectedMode = selectAutoMode(taskType, availability);
   }
 
+  const resolvedInfo = getResolvedModelsForMode(selectedMode, model);
   if (isAuto) {
+    updateExecutionState({
+      active: true,
+      mode: "auto",
+      selectedMode,
+      autoMode: true,
+      modelId: resolvedInfo.primaryModelId,
+      activeModels: resolvedInfo.activeModels,
+      currentAction: `自動判別: [${taskType.reason}] ➔ ${selectedMode} (${resolvedInfo.description})`,
+      progress: 5,
+    });
+
     emitHeader(
       onEvent,
-      `> 🤖 **自動判別 (Auto)**: [${taskType.reason}] ➔ **${selectedMode}** を選択しました\n\n`,
+      `> 🤖 **自動判別 (Auto)**: [${taskType.reason}] ➔ **${selectedMode}** を選択しました\n` +
+      `> 🎯 **稼働モデルID**: \`${resolvedInfo.activeModels.join("` + `")}\` (${resolvedInfo.description})\n\n`,
       "auto",
       "routing"
     );
@@ -591,6 +656,18 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
   switch (selectedMode) {
     case "codex": {
+      const modelId = model || "gpt-6-astra";
+      updateExecutionState({
+        active: true,
+        mode: isAuto ? "auto" : "codex",
+        selectedMode: "codex",
+        agent: "codex",
+        modelId,
+        modelDisplayName: "GPT-6-Astra",
+        activeModels: [modelId],
+        currentAction: `Codex実行中 [${modelId}]`,
+        progress: 30,
+      });
       const result = await runCodex(prompt, {
         cwd,
         model,
@@ -601,6 +678,18 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
     }
 
     case "antigravity": {
+      const modelId = model === "flash" ? "gemini-3.8-flash-high" : "gemini-3.1-pro-high";
+      updateExecutionState({
+        active: true,
+        mode: isAuto ? "auto" : "antigravity",
+        selectedMode: "antigravity",
+        agent: "antigravity",
+        modelId,
+        modelDisplayName: model === "flash" ? "Gemini 3.8 Flash (High)" : "Gemini 3.1 Pro (High)",
+        activeModels: [modelId],
+        currentAction: `Gemini実行中 [${modelId}]`,
+        progress: 30,
+      });
       if (isAuto) {
         const context = await buildWorkspaceContext(cwd, { hint: prompt });
         const result = await runAntigravityDetached(
@@ -626,11 +715,23 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
     }
 
     case "autonomous": {
+      const modelId = "gemini-3.1-pro-high";
+      updateExecutionState({
+        active: true,
+        mode: isAuto ? "auto" : "autonomous",
+        selectedMode: "autonomous",
+        agent: "antigravity",
+        modelId,
+        modelDisplayName: "Gemini 3.1 Pro (High)",
+        activeModels: [modelId],
+        progress: 10,
+        currentAction: `自律ツール処理中 [${modelId}]`,
+      });
       emitHeader(
         onEvent,
-        "> 🚀 **自律エージェントモード (Autonomous / Auto-Approve)**\n" +
-        "> ─── 🔄 手動承認なしでファイルの読み書き・コマンド実行を自律処理します ───\n" +
-        "> 💭 **【推論要約】** 要求仕様を分析し、必要なツール（Web調査、スクリプト実行、ファイル生成）を自律実行中...\n\n",
+        `> 🚀 **自律エージェントモード (Autonomous / Auto-Approve)** | モデルID: \`${modelId}\`\n` +
+        `> ─── 🔄 手動承認なしでファイルの読み書き・コマンド実行を自律処理します ───\n` +
+        `> 💭 **【推論要約】** 要求仕様を分析し、必要なツール（Web調査、スクリプト実行、ファイル生成）を自律実行中...\n\n`,
         "autonomous",
         "start"
       );
@@ -707,13 +808,16 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           mode: "collaborative",
           phase: "plan",
           agent: "antigravity",
+          modelId: "gemini-3.1-pro-high",
+          modelDisplayName: "Gemini 3.1 Pro (High)",
+          activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
           progress: 25,
-          currentAction: "計画・設計フェーズ (Gemini Pro)",
+          currentAction: "計画・設計フェーズ [gemini-3.1-pro-high]",
         });
 
         emitHeader(
           onEvent,
-          "> 📊 **【進捗 1/4】** `[▰▰▱▱▱▱▱▱] 25%` ── **計画・設計フェーズ (Gemini Pro)**\n" +
+          "> 📊 **【進捗 1/4】** `[▰▰▱▱▱▱▱▱] 25%` ── **計画・設計フェーズ** | モデルID: `gemini-3.1-pro-high` (Gemini 3.1 Pro)\n" +
           "> 💭 **【推論要約】** ワークスペース構造を分析し、変更対象ファイル・アーキテクチャ制約・実装計画を策定中...\n\n" +
           "## Plan (Gemini/Antigravity)\n",
           "antigravity",
@@ -735,13 +839,16 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           mode: "collaborative",
           phase: "implementation",
           agent: "codex",
+          modelId: "gpt-6-astra",
+          modelDisplayName: "GPT-6-Astra",
+          activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
           progress: 50,
-          currentAction: "自律実装フェーズ (OpenAI Codex)",
+          currentAction: "自律実装フェーズ [gpt-6-astra]",
         });
 
         emitHeader(
           onEvent,
-          "\n\n> 💻 **【進捗 2/4】** `[▰▰▰▰▱▱▱▱] 50%` ── **自律実装フェーズ (OpenAI Codex)**\n" +
+          "\n\n> 💻 **【進捗 2/4】** `[▰▰▰▰▱▱▱▱] 50%` ── **自律実装フェーズ** | モデルID: `gpt-6-astra` (OpenAI Codex)\n" +
           "> 🔨 **【推論要約】** 計画に基づき、コードの編集・作成およびテスト検証を自律実行中...\n\n" +
           "## Implementation (Codex/GPT)\n",
           "codex",
@@ -772,13 +879,16 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           mode: "collaborative",
           phase: "review",
           agent: "antigravity",
+          modelId: "gemini-3.1-pro-high",
+          modelDisplayName: "Gemini 3.1 Pro (High)",
+          activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
           progress: 75,
-          currentAction: "独立検査フェーズ (Gemini Pro)",
+          currentAction: "独立検査フェーズ [gemini-3.1-pro-high]",
         });
 
         emitHeader(
           onEvent,
-          "\n\n> 🔍 **【進捗 3/4】** `[▰▰▰▰▰▰▱▱] 75%` ── **独立検査フェーズ (Gemini Pro)**\n" +
+          "\n\n> 🔍 **【進捗 3/4】** `[▰▰▰▰▰▰▱▱] 75%` ── **独立検査フェーズ** | モデルID: `gemini-3.1-pro-high` (Gemini 3.1 Pro)\n" +
           "> 🔎 **【推論要約】** 実装によるGit差分とテスト結果を読み取り専用の隔離環境で検査し、品質と安全性を検証中...\n\n" +
           "## Review (Gemini/Antigravity)\n",
           "antigravity",
@@ -810,13 +920,16 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           mode: "collaborative",
           phase: "refinement",
           agent: "codex",
+          modelId: "gpt-6-astra",
+          modelDisplayName: "GPT-6-Astra",
+          activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
           progress: 95,
-          currentAction: "修正・仕上げフェーズ (OpenAI Codex)",
+          currentAction: "修正・仕上げフェーズ [gpt-6-astra]",
         });
 
         emitHeader(
           onEvent,
-          "\n\n> ✨ **【進捗 4/4】** `[▰▰▰▰▰▰▰▰] 100%` ── **修正・仕上げフェーズ (OpenAI Codex)**\n" +
+          "\n\n> ✨ **【進捗 4/4】** `[▰▰▰▰▰▰▰▰] 100%` ── **修正・仕上げフェーズ** | モデルID: `gpt-6-astra` (OpenAI Codex)\n" +
           "> 🛠️ **【推論要約】** レビューで指摘された改善項目の反映と最終調整を実行中...\n\n" +
           "## Refinement (Codex/GPT)\n",
           "codex",
