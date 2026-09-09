@@ -252,12 +252,10 @@ function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
   args.push(
     "-C",
     cwd || process.cwd(),
-    "--sandbox",
-    "workspace-write",
-    "--ask-for-approval",
+    "--approve-for-me",
+    "--color",
     "never",
-    "--output-format",
-    "text",
+    "--skip-git-repo-check",
     prompt
   );
 
@@ -272,9 +270,19 @@ function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
   });
 }
 
+function mapAntigravityModel(model) {
+  if (!model) return undefined;
+  const lower = model.toLowerCase();
+  if (lower === "pro") return "Gemini 3.1 Pro (High)";
+  if (lower === "flash") return "Gemini 3.8 Flash (High)";
+  if (lower === "flash_lite" || lower === "flash-lite") return "Gemini 3.8 Flash (Low)";
+  return model;
+}
+
 function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
   const args = [`-p=${prompt}`, "--output-format", "text", "--dangerously-skip-permissions"];
-  if (model) args.push("--model", model);
+  const targetModel = mapAntigravityModel(model);
+  if (targetModel) args.push("--model", targetModel);
 
   const actualCwd = cwd || process.cwd();
   return runProcess({
