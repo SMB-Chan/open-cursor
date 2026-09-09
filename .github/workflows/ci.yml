@@ -33,13 +33,6 @@ jobs:
         working-directory: server
         run: npm test
 
-      - name: Install extension dependencies
+      - name: Check extension source
         working-directory: extension
-        run: npm ci
-
-      - name: Build extension
-        working-directory: extension
-        run: npm run build
-
-      - name: Verify generated extension is committed
-        run: git diff --exit-code -- extension/dist/extension.js
+        run: npm run check
