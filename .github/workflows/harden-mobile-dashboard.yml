@@ -1,0 +1,43 @@
+name: Apply mobile dashboard security hardening
+
+on:
+  push:
+    branches: [fix/mobile-dashboard-security]
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    if: ${{ !contains(github.event.head_commit.message, 'generated mobile dashboard hardening') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: fix/mobile-dashboard-security
+          fetch-depth: 0
+
+      - name: Apply hardening migration
+        run: node scripts/harden-mobile-dashboard.mjs
+
+      - name: Verify mobile dashboard
+        working-directory: mobile
+        run: |
+          npm run check
+          npm test
+
+      - name: Verify launcher and full project
+        run: |
+          bash -n bin/open-cursor bin/stop-bridge bin/install.sh bin/open-cursor-app scripts/install-smoke-test.sh
+          cd server && npm run check && npm test
+          cd ../extension && npm run check && npm test
+
+      - name: Commit generated hardening
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mobile/public/index.html bin/open-cursor README.md .github/workflows/ci.yml
+          git commit -m "fix: apply generated mobile dashboard hardening"
+          git push origin HEAD:fix/mobile-dashboard-security
