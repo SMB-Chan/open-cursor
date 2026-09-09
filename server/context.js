@@ -164,7 +164,8 @@ async function walkWorkspace(root, maxFiles) {
     }
 
     entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory() && IGNORED_DIRECTORIES.has(entry.name)) continue;
 
@@ -180,7 +181,7 @@ async function walkWorkspace(root, maxFiles) {
 
       files.push({ absolutePath, relativePath });
       if (files.length >= maxFiles) {
-        truncated = queue.length > 0 || entries.indexOf(entry) < entries.length - 1;
+        truncated = queue.length > 0 || index < entries.length - 1;
         return { files, truncated };
       }
     }
@@ -221,11 +222,10 @@ async function buildWorkspaceContext(root, options = {}) {
   const { files, truncated } = await walkWorkspace(root, limits.maxFiles);
   const parts = [];
   const budget = { remaining: limits.maxBytes };
-  const treeLines = files.map((file) => `- ${file.relativePath}`);
 
   appendWithinBudget(parts, "# Workspace map\n", budget);
-  for (const line of treeLines) {
-    if (!appendWithinBudget(parts, `${line}\n`, budget)) break;
+  for (const file of files) {
+    if (!appendWithinBudget(parts, `- ${file.relativePath}\n`, budget)) break;
   }
   if (truncated) appendWithinBudget(parts, "- … workspace map truncated …\n", budget);
 
@@ -270,19 +270,19 @@ function captureCommand(command, args, { cwd, maxBytes, timeoutMs = 5000 } = {})
     let bytes = 0;
     let truncated = false;
     let settled = false;
+    let timer = null;
 
     const finish = (result) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolvePromise(result);
     };
 
     const consume = (chunk, target) => {
       if (truncated) return;
-      const text = chunk.toString();
+      const buffer = Buffer.from(chunk);
       const available = Math.max(0, maxBytes - bytes);
-      const buffer = Buffer.from(text);
       if (buffer.length > available) {
         const clipped = buffer.subarray(0, available).toString("utf8");
         if (target === "stdout") stdout += clipped;
@@ -293,8 +293,8 @@ function captureCommand(command, args, { cwd, maxBytes, timeoutMs = 5000 } = {})
         return;
       }
       bytes += buffer.length;
-      if (target === "stdout") stdout += text;
-      else stderr += text;
+      if (target === "stdout") stdout += buffer.toString("utf8");
+      else stderr += buffer.toString("utf8");
     };
 
     child.stdout.on("data", (chunk) => consume(chunk, "stdout"));
@@ -302,13 +302,23 @@ function captureCommand(command, args, { cwd, maxBytes, timeoutMs = 5000 } = {})
     child.once("error", () => finish({ stdout: "", stderr: "", code: null, truncated: false }));
     child.once("close", (code) => finish({ stdout, stderr, code, truncated }));
 
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       truncated = true;
       child.kill("SIGTERM");
       finish({ stdout, stderr, code: null, truncated: true });
     }, timeoutMs);
     timer.unref?.();
   });
+}
+
+async function getGitHead(root) {
+  const result = await captureCommand("git", ["rev-parse", "--verify", "HEAD"], {
+    cwd: root,
+    maxBytes: 256,
+  });
+  if (result.code !== 0) return null;
+  const head = result.stdout.trim();
+  return /^[0-9a-f]{40,64}$/i.test(head) ? head : null;
 }
 
 async function buildGitReviewContext(root, options = {}) {
@@ -318,28 +328,49 @@ async function buildGitReviewContext(root, options = {}) {
     4096,
     2 * 1024 * 1024
   );
-  const half = Math.floor(maxBytes / 2);
+  const statusBudget = Math.min(16 * 1024, Math.floor(maxBytes / 4));
+  const diffBudget = maxBytes - statusBudget;
 
   const status = await captureCommand("git", ["status", "--short"], {
     cwd: root,
-    maxBytes: Math.min(16 * 1024, half),
+    maxBytes: statusBudget,
   });
-  const unstaged = await captureCommand(
-    "git",
-    ["diff", "--no-ext-diff", "--unified=3", "--"],
-    { cwd: root, maxBytes: half }
-  );
-  const staged = await captureCommand(
-    "git",
-    ["diff", "--cached", "--no-ext-diff", "--unified=3", "--"],
-    { cwd: root, maxBytes: half }
-  );
+
+  let diff;
+  if (options.baseRef) {
+    diff = await captureCommand(
+      "git",
+      ["diff", options.baseRef, "--no-ext-diff", "--unified=3", "--"],
+      { cwd: root, maxBytes: diffBudget }
+    );
+  } else {
+    const unstagedBudget = Math.floor(diffBudget / 2);
+    const unstaged = await captureCommand(
+      "git",
+      ["diff", "--no-ext-diff", "--unified=3", "--"],
+      { cwd: root, maxBytes: unstagedBudget }
+    );
+    const staged = await captureCommand(
+      "git",
+      ["diff", "--cached", "--no-ext-diff", "--unified=3", "--"],
+      { cwd: root, maxBytes: diffBudget - unstagedBudget }
+    );
+    diff = {
+      stdout: [unstaged.stdout, staged.stdout].filter(Boolean).join("\n"),
+      truncated: unstaged.truncated || staged.truncated,
+    };
+  }
 
   const sections = [];
   if (status.stdout.trim()) sections.push(`# Git status\n${status.stdout.trim()}`);
-  if (unstaged.stdout.trim()) sections.push(`# Unstaged diff\n${unstaged.stdout.trim()}`);
-  if (staged.stdout.trim()) sections.push(`# Staged diff\n${staged.stdout.trim()}`);
-  if (unstaged.truncated || staged.truncated) sections.push("# Note\nGit diff was truncated to the configured review budget.");
+  if (diff.stdout.trim()) {
+    sections.push(
+      `# Changes${options.baseRef ? ` since ${options.baseRef.slice(0, 12)}` : ""}\n${diff.stdout.trim()}`
+    );
+  }
+  if (diff.truncated) {
+    sections.push("# Note\nGit diff was truncated to the configured review budget.");
+  }
 
   return sections.join("\n\n") || "# Git review context\nNo Git changes were detected.";
 }
@@ -357,6 +388,7 @@ export {
   buildGitReviewContext,
   buildWorkspaceContext,
   contextLimits,
+  getGitHead,
   isSecretPath,
   scoreContextFile,
   withIsolatedDirectory,
