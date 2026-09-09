@@ -2,7 +2,7 @@
   "name": "open-cursor-bridge",
   "displayName": "Open-Cursor Multi-Agent Bridge",
   "description": "Codex + Antigravity + optional MiMo multi-agent coding bridge with execution receipts",
-  "version": "2.9.0",
+  "version": "2.9.1",
   "publisher": "open-cursor",
   "engines": {
     "vscode": "^1.80.0"

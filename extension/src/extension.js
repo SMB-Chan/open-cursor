@@ -576,6 +576,25 @@ function getChatHTML(webview) {
     .md-list { margin: 6px 0; padding-left: 22px; }
     .md-li { margin: 2px 0; }
     .md-icode { font-family: var(--vscode-editor-font-family); font-size: 12px; background: var(--vscode-textCodeBlock-background); border-radius: 3px; padding: 1px 4px; }
+    /* Copy button on code blocks */
+    .md-code-wrap { position: relative; }
+    .md-copy { position: absolute; top: 4px; right: 6px; padding: 2px 8px; font-size: 10px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--vscode-widget-border); border-radius: 4px; opacity: 0; transition: opacity .15s; cursor: pointer; }
+    .md-code-wrap:hover .md-copy, .md-copy:focus-visible { opacity: 1; }
+    .md-copy.copied { opacity: 1; color: var(--vscode-testing-iconPassed); }
+    /* Collapse toggle for finished runs */
+    .run-toggle { background: none; border: none; color: var(--vscode-descriptionForeground); cursor: pointer; font-size: 11px; padding: 2px 6px; }
+    .assistant-body.restored { color: var(--vscode-descriptionForeground); }
+    .assistant-card.collapsed .assistant-body,
+    .assistant-card.collapsed .workspace-receipt { display: none; }
+    /* Live elapsed timer */
+    .run-timer { font-size: 11px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
+    /* Active phase pulse */
+    @keyframes phasePulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+    .phase-pill.active { animation: phasePulse 1.6s ease-in-out infinite; }
+    /* Clear button */
+    #clear { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+    #actions { align-items: end; }
+    textarea#input { height: auto; }
     .workspace-receipt { margin: 0 10px 10px; padding: 9px 10px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editor-background); font-size: 11px; }
     .receipt-title { font-weight: 600; margin-bottom: 4px; }
     .receipt-summary { color: var(--vscode-foreground); margin-bottom: 5px; }
@@ -600,7 +619,7 @@ function getChatHTML(webview) {
   </style>
 </head>
 <body>
-  <div id="messages" aria-live="polite"></div>
+  <div id="messages" role="log" aria-live="polite" aria-label="Conversation"></div>
   <div id="input-area">
     <select id="mode" aria-label="Agent routing mode">
       <option value="auto">Auto (自動判別)</option>
@@ -615,17 +634,28 @@ function getChatHTML(webview) {
     </select>
     <textarea id="input" placeholder="Ask anything…  Shift+Enter for a new line" aria-label="Message"></textarea>
     <div id="actions">
+      <button id="clear" title="Clear the conversation view">Clear</button>
       <button id="cancel" disabled>Stop</button>
       <button id="send">Send</button>
     </div>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+    // Session transcript: rendered blocks survive panel close/reopen within
+    // this webview's lifetime (serializeState on saveState).
+    const session = [];
+    try {
+      const previous = vscode.getState && vscode.getState();
+      if (previous && Array.isArray(previous.session)) {
+        session.push(...previous.session);
+      }
+    } catch {}
     const messages = document.getElementById('messages');
     const input = document.getElementById('input');
     const mode = document.getElementById('mode');
     const sendButton = document.getElementById('send');
     const cancelButton = document.getElementById('cancel');
+    const clearButton = document.getElementById('clear');
 
     // Streaming markdown renderer (UMD source inlined; see src/markdown.js).
     ${markdownSource.replace(/<\/script>/g, '<\\/script>')}
@@ -648,6 +678,55 @@ function getChatHTML(webview) {
     let activePhase = null;
     let receivedDelta = false;
     let phaseNodes = new Map();
+    let runTimer = null;
+
+    // ── Session transcript persistence ───────────────────────────
+    const SESSION_MAX_BYTES = 256 * 1024;
+
+    function recordTurn(role, text) {
+      session.push({ r: role, t: text, m: mode.value, at: Date.now() });
+      while (session.length > 0) {
+        const bytes = session.reduce((sum, entry) => sum + entry.t.length, 0);
+        if (bytes <= SESSION_MAX_BYTES && session.length <= 40) break;
+        session.shift();
+      }
+    }
+
+    function persistSession(extra = {}) {
+      try {
+        vscode.setState({ session, draft: input.value, mode: mode.value, ...extra });
+      } catch {}
+    }
+
+    function restoreSession() {
+      for (const entry of session) {
+        if (entry.r === 'u') {
+          addMsg('> ' + entry.t, 'user');
+          continue;
+        }
+        createAssistant(entry.m || 'respond');
+        if (assistantBody) {
+          assistantBody.textContent = '';
+          assistantBody.classList.remove('thinking');
+          assistantBody.classList.add('restored');
+          for (const block of MD.tokenizeBlocks(String(entry.t || '').split('\n'))) {
+            assistantBody.appendChild(mdRenderBlock(block));
+          }
+        }
+        if (runTimer) {
+          clearInterval(runTimer.interval);
+          runTimer.node.textContent = 'logged';
+          runTimer = null;
+        }
+        if (agentBadge) agentBadge.textContent = 'Restored';
+        finish();
+      }
+    }
+
+    function autoGrow() {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+    }
 
     function addMsg(text, cls) {
       const div = document.createElement('div');
@@ -695,6 +774,30 @@ function getChatHTML(webview) {
       agentBadge.className = 'agent-badge';
       agentBadge.textContent = 'Starting';
       meta.appendChild(agentBadge);
+
+      const timer = document.createElement('span');
+      timer.className = 'run-timer';
+      timer.textContent = '0.0s';
+      meta.appendChild(timer);
+      runTimer = { startedAt: Date.now(), node: timer, interval: null };
+      runTimer.interval = setInterval(() => {
+        if (!runTimer) return;
+        const secs = (Date.now() - runTimer.startedAt) / 1000;
+        runTimer.node.textContent = secs >= 60
+          ? Math.floor(secs / 60) + 'm' + (secs % 60).toFixed(0).padStart(2, '0') + 's'
+          : secs.toFixed(1) + 's';
+      }, 100);
+
+      const toggle = document.createElement('button');
+      toggle.className = 'run-toggle';
+      toggle.setAttribute('aria-label', 'Collapse this response');
+      toggle.textContent = '▾';
+      toggle.addEventListener('click', () => {
+        const collapsed = assistantCard.classList.toggle('collapsed');
+        toggle.textContent = collapsed ? '▸' : '▾';
+        toggle.setAttribute('aria-label', collapsed ? 'Expand this response' : 'Collapse this response');
+      });
+      meta.appendChild(toggle);
 
       phaseStrip = document.createElement('div');
       phaseStrip.className = 'phase-strip';
@@ -829,12 +932,30 @@ function getChatHTML(webview) {
       if (!text || activeRequestId) return;
       activeRequestId = Date.now().toString(36) + Math.random().toString(36).slice(2);
       addMsg('> ' + text, 'user');
+      recordTurn('u', text);
       vscode.postMessage({ type: 'send', requestId: activeRequestId, text, mode: mode.value });
       input.value = '';
+      autoGrow();
       setBusy(true);
+      persistSession({ draft: '' });
     }
 
     function finish() {
+      if (runTimer) {
+        clearInterval(runTimer.interval);
+        if (runTimer.node && assistantCard) {
+          const secs = (Date.now() - runTimer.startedAt) / 1000;
+          runTimer.node.textContent = secs >= 60
+            ? Math.floor(secs / 60) + 'm' + Math.round(secs % 60) + 's'
+            : secs.toFixed(1) + 's';
+        }
+        runTimer = null;
+      }
+      if (assistantBody) {
+        const body = mdStream && mdStream.raw ? mdStream.raw : assistantBody.textContent;
+        recordTurn('a', body);
+        persistSession();
+      }
       activeRequestId = null;
       assistantCard = null;
       assistantBody = null;
@@ -980,6 +1101,21 @@ function getChatHTML(webview) {
         code.textContent = block.body.join('\n');
         pre.appendChild(code);
         wrap.appendChild(pre);
+        const copy = document.createElement('button');
+        copy.className = 'md-copy';
+        copy.textContent = 'Copy';
+        copy.setAttribute('aria-label', 'Copy code to clipboard');
+        copy.addEventListener('click', () => {
+          navigator.clipboard.writeText(block.body.join('\n')).then(() => {
+            copy.textContent = 'Copied';
+            copy.classList.add('copied');
+            setTimeout(() => {
+              copy.textContent = 'Copy';
+              copy.classList.remove('copied');
+            }, 1200);
+          }).catch(() => {});
+        });
+        wrap.appendChild(copy);
         return wrap;
       }
       if (block.type === 'quote') {
@@ -1036,6 +1172,19 @@ function getChatHTML(webview) {
     sendButton.addEventListener('click', send);
     cancelButton.addEventListener('click', () => {
       if (activeRequestId) vscode.postMessage({ type: 'cancel', requestId: activeRequestId });
+    });
+    clearButton.addEventListener('click', () => {
+      if (activeRequestId) return;
+      messages.textContent = '';
+      session.length = 0;
+      persistSession();
+      input.focus();
+    });
+    // Esc cancels the running request (standard chat UX).
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && activeRequestId && !cancelButton.disabled) {
+        vscode.postMessage({ type: 'cancel', requestId: activeRequestId });
+      }
     });
 
     window.addEventListener('message', (event) => {
@@ -1096,6 +1245,25 @@ function getChatHTML(webview) {
         finish();
       }
     });
+
+    // ── Init: restore previous conversation, draft and mode ──
+    try {
+      const prev = vscode.getState && vscode.getState();
+      if (prev) {
+        if (prev.mode && Array.prototype.some.call(mode.options, (o) => o.value === prev.mode)) {
+          mode.value = prev.mode;
+        }
+        if (typeof prev.draft === 'string' && prev.draft) {
+          input.value = prev.draft;
+          autoGrow();
+        }
+      }
+    } catch {}
+    restoreSession();
+    messages.scrollTop = messages.scrollHeight;
+
+    input.addEventListener('input', autoGrow);
+    mode.addEventListener('change', () => persistSession());
   </script>
 </body>
 </html>`;
