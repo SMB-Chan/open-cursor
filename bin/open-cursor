@@ -17,6 +17,10 @@ MOBILE_ALLOW_REMOTE="${MOBILE_ALLOW_REMOTE:-0}"
 MOBILE_ALLOW_EXEC="${MOBILE_ALLOW_EXEC:-0}"
 MOBILE_HOST="${MOBILE_HOST:-}"
 MOBILE_TOKEN="${MOBILE_TOKEN:-}"
+MOBILE_REMOTE_TRANSPORT="${MOBILE_REMOTE_TRANSPORT:-}"
+MOBILE_TLS_CERT_FILE="${MOBILE_TLS_CERT_FILE:-}"
+MOBILE_TLS_KEY_FILE="${MOBILE_TLS_KEY_FILE:-}"
+MOBILE_PUBLIC_URL="${MOBILE_PUBLIC_URL:-}"
 LAUNCH_WORKSPACE="${OPEN_CURSOR_WORKSPACE:-$PWD}"
 export OPEN_CURSOR_WORKSPACE="$LAUNCH_WORKSPACE"
 export WORKSPACE_DIR="${WORKSPACE_DIR:-$LAUNCH_WORKSPACE}"
@@ -50,7 +54,49 @@ is_true() {
 }
 
 if is_true "$MOBILE_ALLOW_REMOTE"; then
-  MOBILE_HOST="${MOBILE_HOST:-0.0.0.0}"
+  case "${MOBILE_REMOTE_TRANSPORT,,}" in
+    tls|https)
+      MOBILE_REMOTE_TRANSPORT="tls"
+      MOBILE_HOST="${MOBILE_HOST:-0.0.0.0}"
+      if [ -z "$MOBILE_TLS_CERT_FILE" ] || [ -z "$MOBILE_TLS_KEY_FILE" ]; then
+        echo "Error: TLS remote mode requires MOBILE_TLS_CERT_FILE and MOBILE_TLS_KEY_FILE." >&2
+        exit 1
+      fi
+      if [ ! -r "$MOBILE_TLS_CERT_FILE" ] || [ ! -r "$MOBILE_TLS_KEY_FILE" ]; then
+        echo "Error: Mobile TLS certificate/key is not readable." >&2
+        exit 1
+      fi
+      if [ -n "$MOBILE_PUBLIC_URL" ] && [[ "$MOBILE_PUBLIC_URL" != https://* ]]; then
+        echo "Error: MOBILE_PUBLIC_URL must use https:// when MOBILE_REMOTE_TRANSPORT=tls." >&2
+        exit 1
+      fi
+      MOBILE_SCHEME="https"
+      ;;
+    tunnel|trusted-tunnel|vpn)
+      MOBILE_REMOTE_TRANSPORT="tunnel"
+      if [ -z "$MOBILE_HOST" ]; then
+        echo "Error: Tunnel remote mode requires an explicit MOBILE_HOST (VPN/overlay IP or loopback)." >&2
+        exit 1
+      fi
+      case "$MOBILE_HOST" in
+        0.0.0.0|::|"[::]")
+          echo "Error: Tunnel mode refuses wildcard MOBILE_HOST because it would expose plaintext HTTP outside the tunnel." >&2
+          exit 1
+          ;;
+        127.0.0.1|localhost|::1)
+          if [ -z "$MOBILE_PUBLIC_URL" ]; then
+            echo "Error: Loopback tunnel mode requires MOBILE_PUBLIC_URL for the externally reachable tunnel/proxy URL." >&2
+            exit 1
+          fi
+          ;;
+      esac
+      MOBILE_SCHEME="http"
+      ;;
+    *)
+      echo "Error: Remote mobile access requires MOBILE_REMOTE_TRANSPORT=tls or tunnel." >&2
+      exit 1
+      ;;
+  esac
   if [ -z "$MOBILE_TOKEN" ] && [ -r "$MOBILE_TOKEN_FILE" ]; then
     MOBILE_TOKEN="$(cat "$MOBILE_TOKEN_FILE")"
   fi
@@ -66,9 +112,12 @@ if is_true "$MOBILE_ALLOW_REMOTE"; then
   fi
 else
   MOBILE_HOST="${MOBILE_HOST:-127.0.0.1}"
+  MOBILE_REMOTE_TRANSPORT=""
+  MOBILE_SCHEME="http"
 fi
 
-export MOBILE_ALLOW_REMOTE MOBILE_ALLOW_EXEC MOBILE_HOST MOBILE_TOKEN
+export MOBILE_ALLOW_REMOTE MOBILE_ALLOW_EXEC MOBILE_HOST MOBILE_TOKEN MOBILE_REMOTE_TRANSPORT
+export MOBILE_TLS_CERT_FILE MOBILE_TLS_KEY_FILE
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -90,7 +139,17 @@ is_bridge_running() {
 }
 
 is_mobile_running() {
-  curl -sf --connect-timeout 1 "$MOBILE_URL/healthz" >/dev/null 2>&1
+  local health_host="${MOBILE_HOST:-127.0.0.1}"
+  case "$health_host" in
+    0.0.0.0) health_host="127.0.0.1" ;;
+    ::|"[::]") health_host="[::1]" ;;
+    ::1) health_host="[::1]" ;;
+  esac
+  if [ "${MOBILE_SCHEME:-http}" = "https" ]; then
+    curl -ksf --connect-timeout 1 "https://$health_host:$MOBILE_PORT/healthz" >/dev/null 2>&1
+  else
+    curl -sf --connect-timeout 1 "http://$health_host:$MOBILE_PORT/healthz" >/dev/null 2>&1
+  fi
 }
 
 # Start bridge if not running
@@ -145,11 +204,17 @@ LOCAL_IP=$(ip route get 1 2>/dev/null | awk '{print $7;exit}' || echo "127.0.0.1
 echo ""
 echo -e "  ${CYAN}API:${NC} $BRIDGE_URL/v1"
 if is_true "$MOBILE_ALLOW_REMOTE"; then
-  echo -e "  ${GREEN}${BOLD}📱 Mobile Web:${NC} http://${LOCAL_IP}:${MOBILE_PORT}/#token=${MOBILE_TOKEN}"
-  echo -e "  ${YELLOW}Pairing token is a secret; use only on a trusted LAN or encrypted tunnel.${NC}"
+  if [ -n "$MOBILE_PUBLIC_URL" ]; then
+    MOBILE_PAIRING_BASE="${MOBILE_PUBLIC_URL%/}"
+  else
+    MOBILE_PAIRING_BASE="${MOBILE_SCHEME}://${LOCAL_IP}:${MOBILE_PORT}"
+  fi
+  echo -e "  ${GREEN}${BOLD}📱 Mobile Web:${NC} ${MOBILE_PAIRING_BASE}/#token=${MOBILE_TOKEN}"
+  echo -e "  ${CYAN}Transport:${NC} ${MOBILE_REMOTE_TRANSPORT}"
+  echo -e "  ${YELLOW}Pairing token is a secret; remote mode requires TLS or an encrypted trusted tunnel.${NC}"
 else
   echo -e "  ${GREEN}${BOLD}📱 Mobile Web:${NC} http://127.0.0.1:${MOBILE_PORT} (localhost only)"
-  echo -e "  ${CYAN}Remote opt-in:${NC} MOBILE_ALLOW_REMOTE=1 $BRIDGE_DIR/bin/open-cursor"
+  echo -e "  ${CYAN}Remote opt-in:${NC} MOBILE_ALLOW_REMOTE=1 MOBILE_REMOTE_TRANSPORT=tls|tunnel $BRIDGE_DIR/bin/open-cursor"
 fi
 if is_true "$MOBILE_ALLOW_EXEC"; then
   echo -e "  ${RED}Remote shell execution: ENABLED${NC}"

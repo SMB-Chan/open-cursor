@@ -8,9 +8,11 @@ import {
   parseBoolean,
   readBody,
   resolveMobileHost,
+  resolveRemoteTransport,
   securityHeaders,
   tokenMatches,
   validateRuntimeBoundary,
+  validateTransportConfig,
 } from "./server.js";
 
 test("mobile dashboard defaults to localhost-only", () => {
@@ -29,9 +31,32 @@ test("remote bind requires explicit opt-in and a strong token", () => {
     () => validateRuntimeBoundary({ host: "0.0.0.0", allowRemote: true, token: "too-short" }),
     /at least 32 bytes/
   );
-  assert.doesNotThrow(() =>
-    validateRuntimeBoundary({ host: "0.0.0.0", allowRemote: true, token: "a".repeat(64) })
+  assert.throws(
+    () => validateRuntimeBoundary({ host: "0.0.0.0", allowRemote: true, token: "a".repeat(64) }),
+    /MOBILE_REMOTE_TRANSPORT/
   );
+  assert.doesNotThrow(() =>
+    validateRuntimeBoundary({ host: "100.64.0.10", allowRemote: true, token: "a".repeat(64), transport: "tunnel" })
+  );
+});
+
+test("remote transport requires TLS or an explicitly trusted encrypted tunnel", () => {
+  assert.equal(resolveRemoteTransport("", false), "local");
+  assert.equal(resolveRemoteTransport("tls", true), "tls");
+  assert.equal(resolveRemoteTransport("https", true), "tls");
+  assert.equal(resolveRemoteTransport("tunnel", true), "tunnel");
+  assert.equal(resolveRemoteTransport("vpn", true), "tunnel");
+  assert.throws(() => resolveRemoteTransport("http", true), /MOBILE_REMOTE_TRANSPORT/);
+  assert.throws(() => resolveRemoteTransport("", true), /MOBILE_REMOTE_TRANSPORT/);
+});
+
+test("TLS transport requires both certificate and private key paths", () => {
+  assert.throws(() => validateTransportConfig({ mode: "tls", certFile: "", keyFile: "" }), /MOBILE_TLS_CERT_FILE/);
+  const config = validateTransportConfig({ mode: "tls", certFile: "./cert.pem", keyFile: "./key.pem" });
+  assert.equal(config.mode, "tls");
+  assert.ok(config.certFile.endsWith("cert.pem"));
+  assert.ok(config.keyFile.endsWith("key.pem"));
+  assert.deepEqual(validateTransportConfig({ mode: "tunnel" }), { mode: "tunnel", certFile: "", keyFile: "" });
 });
 
 test("bearer authorization uses exact token matching", () => {
@@ -84,4 +109,31 @@ test("workspace header is forwarded verbatim to preserve spaces and non-ASCII pa
   const source = await readFile(new URL("./server.js", import.meta.url), "utf8");
   assert.match(source, /"X-Workspace-Path": WORKSPACE_DIR/);
   assert.doesNotMatch(source, /encodeURI\(WORKSPACE_DIR\)/);
+});
+
+test("tunnel transport rejects wildcard binds that would leak plaintext to the LAN", () => {
+  const token = "a".repeat(64);
+  assert.throws(
+    () => validateRuntimeBoundary({ host: "0.0.0.0", allowRemote: true, token, transport: "tunnel" }),
+    /specific MOBILE_HOST/
+  );
+  assert.doesNotThrow(() =>
+    validateRuntimeBoundary({ host: "100.64.0.10", allowRemote: true, token, transport: "tunnel" })
+  );
+  assert.doesNotThrow(() =>
+    validateRuntimeBoundary({ host: "127.0.0.1", allowRemote: true, token, transport: "tunnel" })
+  );
+});
+
+test("TLS transport may bind all interfaces because the application transport is encrypted", () => {
+  assert.doesNotThrow(() =>
+    validateRuntimeBoundary({
+      host: "0.0.0.0",
+      allowRemote: true,
+      token: "a".repeat(64),
+      transport: "tls",
+      certFile: "./cert.pem",
+      keyFile: "./key.pem",
+    })
+  );
 });

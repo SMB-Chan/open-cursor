@@ -1,4 +1,6 @@
-import { createServer } from "node:http";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { exec, execFile } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
@@ -20,9 +22,13 @@ const WORKSPACE_DIR = resolve(
 );
 const MOBILE_TOKEN = String(process.env.MOBILE_TOKEN || "").trim();
 const ALLOW_EXEC = parseBoolean(process.env.MOBILE_ALLOW_EXEC, false);
+const REMOTE_TRANSPORT = String(process.env.MOBILE_REMOTE_TRANSPORT || "").trim().toLowerCase();
+const TLS_CERT_FILE = String(process.env.MOBILE_TLS_CERT_FILE || "").trim();
+const TLS_KEY_FILE = String(process.env.MOBILE_TLS_KEY_FILE || "").trim();
 const MAX_BODY_BYTES = boundedInteger(process.env.MOBILE_MAX_BODY_BYTES, 256 * 1024, 1024, 2 * 1024 * 1024);
 const MAX_COMMAND_CHARS = boundedInteger(process.env.MOBILE_MAX_COMMAND_CHARS, 8192, 64, 32768);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -52,19 +58,71 @@ function resolveMobileHost(configuredHost, allowRemote) {
   return allowRemote ? "0.0.0.0" : "127.0.0.1";
 }
 
-function validateRuntimeBoundary({ host = HOST, allowRemote = ALLOW_REMOTE, token = MOBILE_TOKEN } = {}) {
-  const remote = !LOOPBACK_HOSTS.has(host);
-  if (remote && !allowRemote) {
+function resolveRemoteTransport(value, remote) {
+  if (!remote) return "local";
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["tls", "https"].includes(normalized)) return "tls";
+  if (["tunnel", "trusted-tunnel", "vpn"].includes(normalized)) return "tunnel";
+  throw new Error(
+    "Remote mobile access requires MOBILE_REMOTE_TRANSPORT=tls or MOBILE_REMOTE_TRANSPORT=tunnel"
+  );
+}
+
+function validateTransportConfig({ mode, certFile = TLS_CERT_FILE, keyFile = TLS_KEY_FILE } = {}) {
+  if (mode !== "tls") return { mode, certFile: "", keyFile: "" };
+  if (!certFile || !keyFile) {
+    throw new Error(
+      "TLS mobile transport requires both MOBILE_TLS_CERT_FILE and MOBILE_TLS_KEY_FILE"
+    );
+  }
+  return { mode, certFile: resolve(certFile), keyFile: resolve(keyFile) };
+}
+
+function validateRuntimeBoundary({
+  host = HOST,
+  allowRemote = ALLOW_REMOTE,
+  token = MOBILE_TOKEN,
+  transport = REMOTE_TRANSPORT,
+  certFile = TLS_CERT_FILE,
+  keyFile = TLS_KEY_FILE,
+} = {}) {
+  const externallyBound = !LOOPBACK_HOSTS.has(host);
+  if (externallyBound && !allowRemote) {
     throw new Error(
       `Refusing to expose the mobile execution dashboard on ${host} without MOBILE_ALLOW_REMOTE=1`
     );
   }
-  if (remote && Buffer.byteLength(String(token || ""), "utf8") < 32) {
+  if (allowRemote && Buffer.byteLength(String(token || ""), "utf8") < 32) {
     throw new Error(
       "Remote mobile dashboard access requires MOBILE_TOKEN with at least 32 bytes of entropy"
     );
   }
-  return { remote };
+  const mode = resolveRemoteTransport(transport, allowRemote);
+  if (mode === "tunnel" && WILDCARD_HOSTS.has(host)) {
+    throw new Error(
+      "Tunnel transport requires a specific MOBILE_HOST (VPN/overlay IP or loopback), not a wildcard bind"
+    );
+  }
+  return {
+    remote: allowRemote,
+    externallyBound,
+    ...validateTransportConfig({ mode, certFile, keyFile }),
+  };
+}
+
+function createMobileServer(boundary, handler) {
+  if (boundary.mode === "tls") {
+    let cert;
+    let key;
+    try {
+      cert = readFileSync(boundary.certFile);
+      key = readFileSync(boundary.keyFile);
+    } catch (error) {
+      throw new Error(`Unable to read mobile TLS certificate/key: ${error.message}`);
+    }
+    return createHttpsServer({ cert, key }, handler);
+  }
+  return createHttpServer(handler);
 }
 
 function bearerToken(req) {
@@ -184,8 +242,10 @@ async function handleStatus(req, res) {
     localIp: getLocalIp(),
     port: PORT,
     workspace: WORKSPACE_DIR,
-    remote: !LOOPBACK_HOSTS.has(HOST),
+    remote: ALLOW_REMOTE,
+    externallyBound: !LOOPBACK_HOSTS.has(HOST),
     shellExecutionEnabled: ALLOW_EXEC,
+    transport: resolveRemoteTransport(REMOTE_TRANSPORT, ALLOW_REMOTE),
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
@@ -325,7 +385,7 @@ function serveStatic(res, contentType, content) {
   res.end(content);
 }
 
-const server = createServer(async (req, res) => {
+async function requestHandler(req, res) {
   if (req.method === "OPTIONS") {
     res.writeHead(204, { Allow: "GET, POST, OPTIONS", ...securityHeaders() });
     return res.end();
@@ -368,13 +428,15 @@ const server = createServer(async (req, res) => {
       });
     }
   }
-});
+}
 
 function startServer() {
   const boundary = validateRuntimeBoundary();
+  const server = createMobileServer(boundary, requestHandler);
   server.listen(PORT, HOST, () => {
     const ip = getLocalIp();
-    const remoteLine = boundary.remote ? `http://${ip}:${PORT}` : "disabled (localhost only)";
+    const scheme = boundary.mode === "tls" ? "https" : "http";
+    const remoteLine = boundary.remote ? `${scheme}://${ip}:${PORT}` : "disabled (localhost only)";
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║             Open-Cursor Mobile Web Dashboard                 ║
@@ -384,6 +446,7 @@ function startServer() {
 ║  Remote URL : ${remoteLine}
 ║  Bridge     : ${BRIDGE_URL}
 ║  Workspace  : ${WORKSPACE_DIR}
+║  Transport  : ${boundary.mode}
 ║  Shell exec : ${ALLOW_EXEC ? "ENABLED" : "DISABLED"}
 ╚══════════════════════════════════════════════════════════════╝
 `);
@@ -406,11 +469,14 @@ export {
   isAuthorized,
   parseBoolean,
   readBody,
+  createMobileServer,
   requireApiAuth,
+  requestHandler,
   resolveMobileHost,
+  resolveRemoteTransport,
   securityHeaders,
-  server,
   startServer,
   tokenMatches,
   validateRuntimeBoundary,
+  validateTransportConfig,
 };
