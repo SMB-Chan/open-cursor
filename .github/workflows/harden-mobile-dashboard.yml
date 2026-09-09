@@ -58,6 +58,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add mobile/public/index.html bin/open-cursor README.md .github/workflows/ci.yml
+          git add mobile/public/index.html bin/open-cursor README.md
           git commit -m "fix: apply generated mobile dashboard hardening"
           git push origin HEAD:fix/mobile-dashboard-security
