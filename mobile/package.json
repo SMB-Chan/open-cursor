@@ -1,6 +1,6 @@
 {
   "name": "open-cursor-mobile",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "type": "module",
   "description": "Authenticated mobile companion for Open-Cursor",
   "main": "server.js",

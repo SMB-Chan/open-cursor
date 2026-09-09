@@ -220,6 +220,17 @@ Legacy shell-managed bridge stop:
 
 Automatic routing recognizes common English and Japanese analysis, implementation, verification, and continuation terms. Explicit routing takes precedence. Auto treats side effects as a hard capability constraint: an implementation request is never reported as completed through MiMo, and a failed/partially completed writer run is never silently retried as a response-only success.
 
+The auto rules are configurable in `routing.rules` (or per-key env overrides `BRIDGE_ROUTING_RULE_ANALYSIS`, `BRIDGE_ROUTING_RULE_GENERAL`, `BRIDGE_ROUTING_RULE_IMPLEMENTATION`, `BRIDGE_ROUTING_RULE_COMPLEX_MULTI_STEP`):
+
+| Rule key | Allowed values | Default |
+| --- | --- | --- |
+| `analysis` | `antigravity` · `mimo-gemini` · `mimo` · `codex` | `antigravity` |
+| `general` | `antigravity` · `mimo-gemini` · `mimo` · `codex` | `antigravity` |
+| `implementation` | `codex` · `collaborative` · `pipeline` · `antigravity` | `codex` |
+| `complex-multi-step` | `codex` · `collaborative` · `pipeline` · `antigravity` | `collaborative` |
+
+Two invariants are enforced at validation time and re-enforced inside the engine: the write-task rules accept only workspace-writing modes (response-only providers are rejected at startup), and `autonomous` is never auto-selected — it remains an explicit user choice. Auto selection is availability-aware and degrades along capability-preserving chains (for example `pipeline` falls back to `codex` when Gemini is unavailable, and analysis falls back through the read-only set before ever considering a writer).
+
 Namespaced models are supported:
 
 ```text
@@ -297,6 +308,10 @@ BRIDGE_CONTEXT_FILE_BYTES
 BRIDGE_DIFF_MAX_BYTES
 BRIDGE_UNTRACKED_MAX_BYTES
 BRIDGE_REVIEWER_SANDBOX
+BRIDGE_ROUTING_RULE_ANALYSIS
+BRIDGE_ROUTING_RULE_GENERAL
+BRIDGE_ROUTING_RULE_IMPLEMENTATION
+BRIDGE_ROUTING_RULE_COMPLEX_MULTI_STEP
 BRIDGE_MAX_REVIEW_CYCLES
 CODEX_BIN
 AGY_BIN
@@ -322,6 +337,7 @@ Several properties are validated as invariants rather than freely configurable k
 - collaborative order remains Plan → Implement → Review → Refine (the verdict-driven loop may repeat Review → Refine within this order, but never reorders it)
 - the collaborative review-loop bound `collaboration.maxReviewCycles` stays a validated integer between 1 and 4 so autonomous loops always terminate
 - loopback/browser-origin/concurrent-writer protection declarations remain fixed in the schema
+- auto-routing rules for write-task kinds accept only workspace-writing modes, and `autonomous` is never auto-selected
 
 `agents.codex.enabled`, `agents.antigravity.enabled`, and `agents.mimo.enabled` control model advertisement and routing availability. MiMo is additionally constrained to `workspaceAccess: "none"` by runtime validation. A request needing a disabled agent fails before execution begins.
 
@@ -416,6 +432,7 @@ Tests cover, among other things:
 - full orchestrate() review-loop behavior against stub agent binaries: convergence, approval short-circuit, and honest non-convergence at the cycle bound
 - untracked-file review excerpts: inclusion on request, secret-like/gitignored omission, per-file clipping, and total budget enforcement
 - reviewer sandbox: strict mode parsing, narrow writable-binds profile, facility probing via stub binaries, auto vs fail-closed resolution, and end-to-end proof that detached reviewers are wrapped while the workspace writer is not
+- configurable routing rules: file/env consumption per task kind, availability-aware fallback chains, and engine-level proof that response-only or autonomous rules can never route write or auto tasks
 
 Extension checks/tests:
 
@@ -429,12 +446,12 @@ CI also validates shell launcher syntax and configuration JSON syntax.
 
 ## Current direction
 
-The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model. The collaborative workflow is now a closed autonomous loop: the reviewer's verdict decides whether refinement runs, refinement is re-reviewed against refreshed evidence (including bounded excerpts of new/untracked files), and non-convergence is reported honestly (2.5/2.6). Detached reviewers can additionally be isolated in an optional bubblewrap mount namespace (2.7).
+The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model. The collaborative workflow is now a closed autonomous loop: the reviewer's verdict decides whether refinement runs, refinement is re-reviewed against refreshed evidence (including bounded excerpts of new/untracked files), and non-convergence is reported honestly (2.5/2.6). Detached reviewers can additionally be isolated in an optional bubblewrap mount namespace (2.7), and the automatic routing rules are configurable under fixed write-safety invariants (2.8).
 
 Near-term priorities are:
 
-1. make automatic routing rules configurable without weakening the fixed write-safety invariants
-2. support reviewer-directed follow-up reads so bounded budgets stay small while review precision improves
-3. release packaging with pinned, reproducible install/upgrade verification
+1. support reviewer-directed follow-up reads so bounded budgets stay small while review precision improves
+2. release packaging with pinned, reproducible install/upgrade verification
+3. expose per-mode routing telemetry (which rule fired and why) in agent status and the mobile dashboard
 
 The mobile dashboard status tab renders live execution telemetry, including the review-loop round (`n/max`), the latest parsed verdict, and convergence state (2.6).

@@ -82,7 +82,8 @@
     "rules": {
       "analysis": "antigravity",
       "implementation": "codex",
-      "complex-multi-step": "collaborative"
+      "complex-multi-step": "collaborative",
+      "general": "antigravity"
     },
     "languages": [
       "en",

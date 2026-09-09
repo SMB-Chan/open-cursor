@@ -62,7 +62,12 @@ function sampleConfig() {
     },
     routing: {
       default: "collaborative",
-      rules: { analysis: "antigravity", implementation: "codex" },
+      rules: {
+        analysis: "antigravity",
+        general: "antigravity",
+        implementation: "codex",
+        "complex-multi-step": "collaborative",
+      },
       languages: ["en", "ja"],
     },
   };
@@ -94,6 +99,8 @@ test("environment variables override file values and are reported by name only",
       BRIDGE_CONTEXT_MAX_FILES: "500",
       BRIDGE_UNTRACKED_MAX_BYTES: "0",
       BRIDGE_REVIEWER_SANDBOX: "auto",
+      BRIDGE_ROUTING_RULE_ANALYSIS: "mimo-gemini",
+      BRIDGE_ROUTING_RULE_COMPLEX_MULTI_STEP: "pipeline",
       BRIDGE_ALLOW_REMOTE: "1",
       AGY_BIN: "/opt/agy",
       MIMO_ENABLED: "0",
@@ -107,6 +114,9 @@ test("environment variables override file values and are reported by name only",
   assert.equal(parsed.bridge.allowRemote, true);
   assert.equal(parsed.execution.agentTimeoutMs, 120000);
   assert.equal(parsed.execution.reviewerSandbox, "auto");
+  assert.equal(parsed.routing.rules.analysis, "mimo-gemini");
+  assert.equal(parsed.routing.rules["complex-multi-step"], "pipeline");
+  assert.equal(parsed.routing.rules.implementation, "codex");
   assert.equal(parsed.context.maxFiles, 500);
   assert.equal(parsed.context.untrackedMaxBytes, 0);
   assert.equal(parsed.agents.antigravity.binary, "/opt/agy");
@@ -121,6 +131,8 @@ test("environment variables override file values and are reported by name only",
       "BRIDGE_CONTEXT_MAX_FILES",
       "BRIDGE_UNTRACKED_MAX_BYTES",
       "BRIDGE_REVIEWER_SANDBOX",
+      "BRIDGE_ROUTING_RULE_ANALYSIS",
+      "BRIDGE_ROUTING_RULE_COMPLEX_MULTI_STEP",
       "BRIDGE_ALLOW_REMOTE",
       "AGY_BIN",
       "MIMO_ENABLED",
@@ -152,6 +164,64 @@ test("reviewer sandbox mode accepts only documented values from file and environ
   );
   assert.equal(explicit.execution.reviewerSandbox, "bubblewrap");
   assert.deepEqual(explicit.overrides, ["BRIDGE_REVIEWER_SANDBOX"]);
+});
+
+test("routing rules enforce capability invariants and reject unknown keys", () => {
+  const base = sampleConfig();
+  const withRules = (rules) => ({
+    ...base,
+    routing: { ...base.routing, rules: { ...base.routing.rules, ...rules } },
+  });
+
+  // Response-only providers can never be configured for write-task kinds.
+  for (const bad of [
+    { implementation: "mimo" },
+    { implementation: "mimo-gemini" },
+    { "complex-multi-step": "mimo" },
+    { "complex-multi-step": "mimo-gemini" },
+  ]) {
+    assert.throws(
+      () => parseRuntimeConfig(withRules(bad), {}, "/home/demo"),
+      (error) => error instanceof RuntimeConfigError && /routing\.rules\./.test(error.message),
+      `expected rejection for ${JSON.stringify(bad)}`
+    );
+  }
+
+  // Read-only kinds accept the read-only set (plus codex) but not autonomous.
+  const parsed = parseRuntimeConfig(withRules({ analysis: "mimo-gemini", general: "mimo" }), {}, "/home/demo");
+  assert.equal(parsed.routing.rules.analysis, "mimo-gemini");
+  assert.equal(parsed.routing.rules.general, "mimo");
+
+  assert.throws(
+    () => parseRuntimeConfig(withRules({ analysis: "autonomous" }), {}, "/home/demo"),
+    (error) => error instanceof RuntimeConfigError && /routing\.rules\.analysis/.test(error.message)
+  );
+
+  // Unknown rule keys are surfaced instead of silently ignored.
+  const unknown = withRules({});
+  unknown.routing.rules.typo = "codex";
+  assert.throws(
+    () => parseRuntimeConfig(unknown, {}, "/home/demo"),
+    (error) => error instanceof RuntimeConfigError && /not a recognized rule key/.test(error.message)
+  );
+
+  // Invalid rule env overrides fail startup instead of degrading silently.
+  assert.throws(
+    () => parseRuntimeConfig(sampleConfig(), { BRIDGE_ROUTING_RULE_IMPLEMENTATION: "mimo" }),
+    (error) => error instanceof RuntimeConfigError && /BRIDGE_ROUTING_RULE_IMPLEMENTATION/.test(error.message)
+  );
+  assert.throws(
+    () => parseRuntimeConfig(sampleConfig(), { BRIDGE_ROUTING_RULE_ANALYSIS: "autonomous" }),
+    (error) => error instanceof RuntimeConfigError && /BRIDGE_ROUTING_RULE_ANALYSIS/.test(error.message)
+  );
+
+  const overridden = parseRuntimeConfig(
+    sampleConfig(),
+    { BRIDGE_ROUTING_RULE_GENERAL: "codex" },
+    "/home/demo"
+  );
+  assert.equal(overridden.routing.rules.general, "codex");
+  assert.deepEqual(overridden.overrides, ["BRIDGE_ROUTING_RULE_GENERAL"]);
 });
 
 test("invalid environment overrides fail instead of silently falling back", () => {
