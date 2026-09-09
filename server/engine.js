@@ -11,6 +11,7 @@ import {
   getGitHead,
   withIsolatedDirectory,
 } from "./context.js";
+import { compressHandoff, safePromptArg } from "./compressor.js";
 
 const VERSION = "2.3.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
@@ -124,6 +125,7 @@ function runProcess({
   cwd,
   env,
   signal,
+  stdinText,
   onStdout,
   onStderr,
   timeoutMs = AGENT_TIMEOUT_MS,
@@ -135,12 +137,18 @@ function runProcess({
 
   return new Promise((resolvePromise, rejectPromise) => {
     const executionId = randomUUID();
+    const stdio = stdinText !== undefined ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"];
     const child = spawn(command, args, {
       cwd: cwd || process.cwd(),
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio,
       windowsHide: true,
     });
+
+    if (stdinText !== undefined && child.stdin) {
+      child.stdin.write(stdinText);
+      child.stdin.end();
+    }
 
     activeProcesses.set(child, {
       id: executionId,
@@ -267,7 +275,7 @@ function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
     "--color",
     "never",
     "--skip-git-repo-check",
-    prompt
+    "-"
   );
 
   return runProcess({
@@ -276,6 +284,7 @@ function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
     args,
     cwd,
     signal,
+    stdinText: prompt,
     onStdout: onChunk,
     env: { ...process.env, CODEX_HOME, OPENAI_API_KEY: "" },
   });
@@ -292,8 +301,9 @@ function mapAntigravityModel(model) {
 
 function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
   const actualCwd = cwd || process.cwd();
+  const safePrompt = safePromptArg(prompt, 64 * 1024);
   const args = [
-    `-p=${prompt}`,
+    `-p=${safePrompt}`,
     "--output-format",
     "text",
     "--dangerously-skip-permissions",
@@ -643,6 +653,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         })
       );
 
+      const compressedAnalysis = compressHandoff(analysis.content, { phase: "plan" });
+
       emitHeader(
         onEvent,
         "\n\n## Implementation (Codex/GPT)\n",
@@ -650,7 +662,7 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         "implementation-header"
       );
       const implementation = requireSuccessfulAgent(
-        await runCodex(buildImplementationPrompt(prompt, analysis.content, initialGitState), {
+        await runCodex(buildImplementationPrompt(prompt, compressedAnalysis, initialGitState), {
           cwd,
           signal,
           onChunk: (text) =>
@@ -687,6 +699,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           })
         );
 
+        const compressedPlan = compressHandoff(plan.content, { phase: "plan" });
+
         emitHeader(
           onEvent,
           "\n\n## Implementation (Codex/GPT)\n",
@@ -694,7 +708,7 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           "implementation-header"
         );
         const implementation = requireSuccessfulAgent(
-          await runCodex(buildImplementationPrompt(prompt, plan.content, initialGitState), {
+          await runCodex(buildImplementationPrompt(prompt, compressedPlan, initialGitState), {
             cwd,
             signal,
             onChunk: (text) =>
@@ -702,11 +716,13 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           })
         );
 
+        const compressedImpl = compressHandoff(implementation.content, { phase: "implementation" });
+
         const [currentGitState, afterContext] = await Promise.all([
-          buildGitReviewContext(cwd, { baseRef: baselineHead }),
+          buildGitReviewContext(cwd, { baseRef: baselineHead, maxBytes: 48 * 1024 }),
           buildWorkspaceContext(cwd, {
             hint: prompt,
-            maxBytes: 64 * 1024,
+            maxBytes: 32 * 1024,
             maxFileBytes: 8 * 1024,
           }),
         ]);
@@ -721,8 +737,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           await runAntigravityDetached(
             buildReviewPrompt(
               prompt,
-              plan.content,
-              implementation.content,
+              compressedPlan,
+              compressedImpl,
               initialGitState,
               currentGitState,
               afterContext.text
@@ -736,6 +752,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           )
         );
 
+        const compressedReview = compressHandoff(review.content, { phase: "review" });
+
         emitHeader(
           onEvent,
           "\n\n## Refinement (Codex/GPT)\n",
@@ -743,7 +761,7 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           "refinement-header"
         );
         const refinement = requireSuccessfulAgent(
-          await runCodex(buildRefinementPrompt(prompt, review.content, currentGitState), {
+          await runCodex(buildRefinementPrompt(prompt, compressedReview, currentGitState), {
             cwd,
             signal,
             onChunk: (text) =>
@@ -795,6 +813,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         })
       );
 
+      const compressedPlan = compressHandoff(plan.content, { phase: "plan" });
+
       emitHeader(
         onEvent,
         "\n\n---\n\n## 💻 MiMo 解決案 (Read-only Solution Draft)\n\n",
@@ -812,10 +832,10 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         prompt,
         "",
         "# Gemini Plan & Analysis",
-        clipText(plan.content, 64 * 1024),
+        clipText(compressedPlan, 32 * 1024),
         "",
         "# Workspace Context",
-        clipText(workspaceContext.text, 32 * 1024),
+        clipText(workspaceContext.text, 24 * 1024),
       ].join("\n");
 
       const implementation = requireSuccessfulAgent(
@@ -826,6 +846,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
             onEvent?.({ text, agent: "mimo", phase: "implementation" }),
         })
       );
+
+      const compressedImpl = compressHandoff(implementation.content, { phase: "implementation" });
 
       emitHeader(
         onEvent,
@@ -842,10 +864,10 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         prompt,
         "",
         "# Architectural Plan",
-        clipText(plan.content, 32 * 1024),
+        clipText(compressedPlan, 24 * 1024),
         "",
         "# MiMo Solution Draft",
-        clipText(implementation.content, 48 * 1024),
+        clipText(compressedImpl, 32 * 1024),
       ].join("\n");
 
       const review = requireSuccessfulAgent(

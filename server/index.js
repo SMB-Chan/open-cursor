@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 // Load and project validated configuration before engine.js evaluates its
 // environment-backed execution constants.
 import { runtimeConfig } from "./config.js";
+import { compressMessages } from "./compressor.js";
 import {
   AGENTS,
   ExecutionAbortedError,
@@ -181,9 +182,7 @@ function buildPrompt(messages) {
     throw new HttpError(400, "messages must be an array");
   }
 
-  let prompt = "";
-  let systemContext = "";
-
+  // Validate roles and types
   for (const msg of messages) {
     if (!msg || typeof msg !== "object" || typeof msg.role !== "string") {
       throw new HttpError(400, "Each message must include a role");
@@ -191,11 +190,22 @@ function buildPrompt(messages) {
     if (typeof msg.content !== "string") {
       throw new HttpError(400, "Only string message content is currently supported");
     }
+    if (!["system", "user", "assistant"].includes(msg.role)) {
+      throw new HttpError(400, `Unsupported message role: ${msg.role}`);
+    }
+  }
 
+  // Proactively compress prior turns to prevent context window exhaustion
+  const { messages: effectiveMessages } = compressMessages(messages);
+
+  let prompt = "";
+  let systemContext = "";
+
+  for (const msg of effectiveMessages) {
+    if (!msg || typeof msg.content !== "string") continue;
     if (msg.role === "system") systemContext += `${msg.content}\n`;
     else if (msg.role === "user") prompt += `${msg.content}\n`;
     else if (msg.role === "assistant") prompt += `[Previous response]\n${msg.content}\n\n`;
-    else throw new HttpError(400, `Unsupported message role: ${msg.role}`);
   }
 
   const fullPrompt = systemContext ? `[System]\n${systemContext}\n${prompt}` : prompt;
