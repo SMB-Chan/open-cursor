@@ -28,6 +28,7 @@ const TLS_KEY_FILE = String(process.env.MOBILE_TLS_KEY_FILE || "").trim();
 const MAX_BODY_BYTES = boundedInteger(process.env.MOBILE_MAX_BODY_BYTES, 256 * 1024, 1024, 2 * 1024 * 1024);
 const MAX_COMMAND_CHARS = boundedInteger(process.env.MOBILE_MAX_COMMAND_CHARS, 8192, 64, 32768);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -85,19 +86,28 @@ function validateRuntimeBoundary({
   certFile = TLS_CERT_FILE,
   keyFile = TLS_KEY_FILE,
 } = {}) {
-  const remote = !LOOPBACK_HOSTS.has(host);
-  if (remote && !allowRemote) {
+  const externallyBound = !LOOPBACK_HOSTS.has(host);
+  if (externallyBound && !allowRemote) {
     throw new Error(
       `Refusing to expose the mobile execution dashboard on ${host} without MOBILE_ALLOW_REMOTE=1`
     );
   }
-  if (remote && Buffer.byteLength(String(token || ""), "utf8") < 32) {
+  if (allowRemote && Buffer.byteLength(String(token || ""), "utf8") < 32) {
     throw new Error(
       "Remote mobile dashboard access requires MOBILE_TOKEN with at least 32 bytes of entropy"
     );
   }
-  const mode = resolveRemoteTransport(transport, remote);
-  return { remote, ...validateTransportConfig({ mode, certFile, keyFile }) };
+  const mode = resolveRemoteTransport(transport, allowRemote);
+  if (mode === "tunnel" && WILDCARD_HOSTS.has(host)) {
+    throw new Error(
+      "Tunnel transport requires a specific MOBILE_HOST (VPN/overlay IP or loopback), not a wildcard bind"
+    );
+  }
+  return {
+    remote: allowRemote,
+    externallyBound,
+    ...validateTransportConfig({ mode, certFile, keyFile }),
+  };
 }
 
 function createMobileServer(boundary, handler) {
@@ -232,9 +242,10 @@ async function handleStatus(req, res) {
     localIp: getLocalIp(),
     port: PORT,
     workspace: WORKSPACE_DIR,
-    remote: !LOOPBACK_HOSTS.has(HOST),
+    remote: ALLOW_REMOTE,
+    externallyBound: !LOOPBACK_HOSTS.has(HOST),
     shellExecutionEnabled: ALLOW_EXEC,
-    transport: resolveRemoteTransport(REMOTE_TRANSPORT, !LOOPBACK_HOSTS.has(HOST)),
+    transport: resolveRemoteTransport(REMOTE_TRANSPORT, ALLOW_REMOTE),
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });

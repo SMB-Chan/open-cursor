@@ -110,3 +110,30 @@ test("workspace header is forwarded verbatim to preserve spaces and non-ASCII pa
   assert.match(source, /"X-Workspace-Path": WORKSPACE_DIR/);
   assert.doesNotMatch(source, /encodeURI\(WORKSPACE_DIR\)/);
 });
+
+test("tunnel transport rejects wildcard binds that would leak plaintext to the LAN", () => {
+  const token = "a".repeat(64);
+  assert.throws(
+    () => validateRuntimeBoundary({ host: "0.0.0.0", allowRemote: true, token, transport: "tunnel" }),
+    /specific MOBILE_HOST/
+  );
+  assert.doesNotThrow(() =>
+    validateRuntimeBoundary({ host: "100.64.0.10", allowRemote: true, token, transport: "tunnel" })
+  );
+  assert.doesNotThrow(() =>
+    validateRuntimeBoundary({ host: "127.0.0.1", allowRemote: true, token, transport: "tunnel" })
+  );
+});
+
+test("TLS transport may bind all interfaces because the application transport is encrypted", () => {
+  assert.doesNotThrow(() =>
+    validateRuntimeBoundary({
+      host: "0.0.0.0",
+      allowRemote: true,
+      token: "a".repeat(64),
+      transport: "tls",
+      certFile: "./cert.pem",
+      keyFile: "./key.pem",
+    })
+  );
+});

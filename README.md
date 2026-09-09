@@ -160,7 +160,7 @@ MOBILE_HOST=100.x.y.z \
 ~/.cursor-codex-bridge/bin/open-cursor
 ```
 
-In `tunnel` mode Open-Cursor serves HTTP only inside the transport you explicitly declared trusted. The tunnel/VPN is responsible for encryption and peer authentication. Use `MOBILE_PUBLIC_URL` when the externally reachable tunnel URL differs from the local bind address.
+In `tunnel` mode Open-Cursor serves HTTP only inside the transport you explicitly declared trusted. The tunnel/VPN is responsible for encryption and peer authentication. Use `MOBILE_PUBLIC_URL` when the externally reachable tunnel URL differs from the local bind address. Tunnel mode refuses wildcard binds such as `0.0.0.0`; bind a specific VPN/overlay address, or bind `127.0.0.1` behind a reverse proxy and set `MOBILE_PUBLIC_URL`.
 
 The launcher creates a 256-bit pairing token in `~/.cursor-codex-bridge/mobile.token` with mode `0600` and prints a pairing URL using `#token=...`. URL fragments are not sent in HTTP requests; the browser moves the token into session storage and sends it only in a Bearer authorization header.
 

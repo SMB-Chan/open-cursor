@@ -54,10 +54,10 @@ is_true() {
 }
 
 if is_true "$MOBILE_ALLOW_REMOTE"; then
-  MOBILE_HOST="${MOBILE_HOST:-0.0.0.0}"
   case "${MOBILE_REMOTE_TRANSPORT,,}" in
     tls|https)
       MOBILE_REMOTE_TRANSPORT="tls"
+      MOBILE_HOST="${MOBILE_HOST:-0.0.0.0}"
       if [ -z "$MOBILE_TLS_CERT_FILE" ] || [ -z "$MOBILE_TLS_KEY_FILE" ]; then
         echo "Error: TLS remote mode requires MOBILE_TLS_CERT_FILE and MOBILE_TLS_KEY_FILE." >&2
         exit 1
@@ -66,10 +66,30 @@ if is_true "$MOBILE_ALLOW_REMOTE"; then
         echo "Error: Mobile TLS certificate/key is not readable." >&2
         exit 1
       fi
+      if [ -n "$MOBILE_PUBLIC_URL" ] && [[ "$MOBILE_PUBLIC_URL" != https://* ]]; then
+        echo "Error: MOBILE_PUBLIC_URL must use https:// when MOBILE_REMOTE_TRANSPORT=tls." >&2
+        exit 1
+      fi
       MOBILE_SCHEME="https"
       ;;
     tunnel|trusted-tunnel|vpn)
       MOBILE_REMOTE_TRANSPORT="tunnel"
+      if [ -z "$MOBILE_HOST" ]; then
+        echo "Error: Tunnel remote mode requires an explicit MOBILE_HOST (VPN/overlay IP or loopback)." >&2
+        exit 1
+      fi
+      case "$MOBILE_HOST" in
+        0.0.0.0|::|"[::]")
+          echo "Error: Tunnel mode refuses wildcard MOBILE_HOST because it would expose plaintext HTTP outside the tunnel." >&2
+          exit 1
+          ;;
+        127.0.0.1|localhost|::1)
+          if [ -z "$MOBILE_PUBLIC_URL" ]; then
+            echo "Error: Loopback tunnel mode requires MOBILE_PUBLIC_URL for the externally reachable tunnel/proxy URL." >&2
+            exit 1
+          fi
+          ;;
+      esac
       MOBILE_SCHEME="http"
       ;;
     *)
@@ -119,10 +139,16 @@ is_bridge_running() {
 }
 
 is_mobile_running() {
+  local health_host="${MOBILE_HOST:-127.0.0.1}"
+  case "$health_host" in
+    0.0.0.0) health_host="127.0.0.1" ;;
+    ::|"[::]") health_host="[::1]" ;;
+    ::1) health_host="[::1]" ;;
+  esac
   if [ "${MOBILE_SCHEME:-http}" = "https" ]; then
-    curl -ksf --connect-timeout 1 "https://127.0.0.1:$MOBILE_PORT/healthz" >/dev/null 2>&1
+    curl -ksf --connect-timeout 1 "https://$health_host:$MOBILE_PORT/healthz" >/dev/null 2>&1
   else
-    curl -sf --connect-timeout 1 "http://127.0.0.1:$MOBILE_PORT/healthz" >/dev/null 2>&1
+    curl -sf --connect-timeout 1 "http://$health_host:$MOBILE_PORT/healthz" >/dev/null 2>&1
   fi
 }
 
