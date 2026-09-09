@@ -278,7 +278,7 @@ async function handleChat(req, res) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Workspace-Path": encodeURI(WORKSPACE_DIR),
+        "X-Workspace-Path": WORKSPACE_DIR,
       },
       body: JSON.stringify({
         model,

@@ -78,3 +78,10 @@ test("mobile client contains pairing auth and escapes Git-derived HTML", async (
   assert.match(html, /escapeHtml/);
   assert.match(html, /sessionStorage/);
 });
+
+
+test("workspace header is forwarded verbatim to preserve spaces and non-ASCII paths", async () => {
+  const source = await readFile(new URL("./server.js", import.meta.url), "utf8");
+  assert.match(source, /"X-Workspace-Path": WORKSPACE_DIR/);
+  assert.doesNotMatch(source, /encodeURI\(WORKSPACE_DIR\)/);
+});
