@@ -20,7 +20,18 @@ jobs:
           fetch-depth: 0
 
       - name: Apply hardening migration
-        run: node scripts/harden-mobile-dashboard.mjs
+        run: |
+          set +e
+          node scripts/harden-mobile-dashboard.mjs 2>mobile-hardening.err
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            cat mobile-hardening.err
+            if ! grep -q "mobile hardening anchor not found: README mobile security" mobile-hardening.err; then
+              exit "$status"
+            fi
+          fi
+          node scripts/finish-mobile-hardening.mjs
 
       - name: Verify mobile dashboard
         working-directory: mobile
@@ -33,6 +44,15 @@ jobs:
           bash -n bin/open-cursor bin/stop-bridge bin/install.sh bin/open-cursor-app scripts/install-smoke-test.sh
           cd server && npm run check && npm test
           cd ../extension && npm run check && npm test
+
+      - name: Verify security migration outputs
+        run: |
+          grep -q 'MOBILE_ALLOW_REMOTE' bin/open-cursor
+          grep -q 'MOBILE_ALLOW_EXEC' bin/open-cursor
+          grep -q 'Mobile dashboard security' README.md
+          grep -q 'Test mobile dashboard security' .github/workflows/ci.yml
+          grep -q 'authenticatedFetch' mobile/public/index.html
+          ! grep -q 'Access-Control-Allow-Origin.*\*' mobile/server.js
 
       - name: Commit generated hardening
         run: |
