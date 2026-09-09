@@ -9,5 +9,6 @@ bridge.pid
 *.token
 *.log
 run/
+dist/
 
 collaboration-verification.json
