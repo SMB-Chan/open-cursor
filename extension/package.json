@@ -42,6 +42,13 @@
         "title": "Open-Cursor: Chat with Agents"
       }
     ],
+    "keybindings": [
+      {
+        "command": "openCursor.chat",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      }
+    ],
     "configuration": {
       "title": "Open-Cursor Bridge",
       "properties": {
