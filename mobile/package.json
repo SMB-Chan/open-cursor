@@ -1,7 +1,14 @@
 {
   "name": "open-cursor-mobile",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "type": "module",
-  "description": "Mobile Web Dashboard for Open-Cursor",
-  "main": "server.js"
+  "description": "Authenticated mobile companion for Open-Cursor",
+  "main": "server.js",
+  "scripts": {
+    "check": "node --check server.js && node --check server.test.js",
+    "test": "node --test server.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }

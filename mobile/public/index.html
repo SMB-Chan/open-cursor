@@ -496,6 +496,60 @@
   </nav>
 
   <script>
+    const MOBILE_TOKEN_KEY = 'openCursorMobileToken';
+    const nativeFetch = window.fetch.bind(window);
+    let pairingToken = sessionStorage.getItem(MOBILE_TOKEN_KEY) || '';
+    let pairingDeclined = false;
+
+    const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const hashToken = (hashParams.get('token') || '').trim();
+    if (hashToken) {
+      pairingToken = hashToken;
+      sessionStorage.setItem(MOBILE_TOKEN_KEY, pairingToken);
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    async function authenticatedFetch(input, init = {}) {
+      const target = typeof input === 'string' ? input : (input?.url || '');
+      const isApi = target.startsWith('/api/');
+      if (!isApi) return nativeFetch(input, init);
+
+      const withToken = (token) => {
+        const headers = new Headers(init.headers || {});
+        if (token) headers.set('Authorization', 'Bearer ' + token);
+        return { ...init, headers };
+      };
+
+      let response = await nativeFetch(input, withToken(pairingToken));
+      if (response.status !== 401 || pairingDeclined) return response;
+
+      const entered = window.prompt('Open-Cursor Mobile pairing token を入力してください');
+      if (!entered || !entered.trim()) {
+        pairingDeclined = true;
+        return response;
+      }
+
+      pairingToken = entered.trim();
+      sessionStorage.setItem(MOBILE_TOKEN_KEY, pairingToken);
+      response = await nativeFetch(input, withToken(pairingToken));
+      if (response.status === 401) {
+        sessionStorage.removeItem(MOBILE_TOKEN_KEY);
+        pairingToken = '';
+      }
+      return response;
+    }
+
+    window.fetch = authenticatedFetch;
+
     // Tab switching
     function switchTab(tabId) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -666,16 +720,16 @@
           statusList.innerHTML = '<span style="color: var(--accent-green)">✓ 作業ツリーはクリーンです</span>';
         } else {
           const lines = data.status.split('\n');
-          statusList.innerHTML = lines.map(line => `<div class="file-item"><span>${line}</span></div>`).join('');
+          statusList.innerHTML = lines.map(line => `<div class="file-item"><span>${escapeHtml(line)}</span></div>`).join('');
         }
 
         const commitsList = document.getElementById('git-commits-list');
         if (data.commits && data.commits.length > 0) {
           commitsList.innerHTML = data.commits.map(c => `
             <div class="commit-item">
-              <span class="commit-hash">${c.hash}</span>
-              <span>${c.message}</span>
-              <div style="font-size: 11px; color: var(--text-muted);">${c.date} by ${c.author}</div>
+              <span class="commit-hash">${escapeHtml(c.hash)}</span>
+              <span>${escapeHtml(c.message)}</span>
+              <div style="font-size: 11px; color: var(--text-muted);">${escapeHtml(c.date)} by ${escapeHtml(c.author)}</div>
             </div>
           `).join('');
         }
@@ -695,6 +749,16 @@
         document.getElementById('stat-ip').textContent = `http://${data.localIp}:${data.port}`;
         document.getElementById('stat-dir').textContent = data.workspace;
         document.getElementById('stat-uptime').textContent = `${Math.floor(data.uptime / 60)} 分`;
+
+        const shellEnabled = data.shellExecutionEnabled === true;
+        document.querySelectorAll('#tab-term button, #cmd-input').forEach((el) => {
+          el.disabled = !shellEnabled;
+          el.style.opacity = shellEnabled ? '' : '0.55';
+        });
+        if (!shellEnabled) {
+          document.getElementById('term-output').textContent =
+            'Remote shell execution is disabled. Start with MOBILE_ALLOW_EXEC=1 only when explicitly needed.';
+        }
 
         const bridgeOnline = data.bridge && data.bridge.status === 'ok';
         document.getElementById('status-dot').className = 'status-dot ' + (bridgeOnline ? '' : 'offline');

@@ -30,6 +30,12 @@ import {
   runProcess,
   stopActiveProcesses,
 } from "./engine.js";
+import {
+  finishWorkspaceReceipt,
+  getExecutionReceipt,
+  shouldJournalWorkspace,
+  startWorkspaceReceipt,
+} from "./receipt.js";
 
 const PORT = runtimeConfig.bridge.port;
 const HOST = runtimeConfig.bridge.host;
@@ -45,6 +51,19 @@ const ROUTING_MODES = new Set([
   "autonomous",
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const REQUEST_ID_PATTERN = /^chatcmpl-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function resolveRequestId(rawRequestId) {
+  if (rawRequestId === undefined || rawRequestId === null || String(rawRequestId).trim() === "") {
+    return `chatcmpl-${randomUUID()}`;
+  }
+
+  const value = String(rawRequestId).trim();
+  if (!REQUEST_ID_PATTERN.test(value)) {
+    throw new HttpError(400, "X-Open-Cursor-Request-Id must use chatcmpl-<UUID> format");
+  }
+  return value;
+}
 
 function parseAgentSelection(modelName, headerMode) {
   const requestedModel = typeof modelName === "string" ? modelName.trim() : "";
@@ -256,6 +275,9 @@ function sendError(res, error) {
       message: error?.message || "Internal server error",
       type: status >= 500 ? "server_error" : "invalid_request_error",
     },
+    ...(error?.workspaceReceipt
+      ? { open_cursor: { workspace_receipt: error.workspaceReceipt } }
+      : {}),
   });
 }
 
@@ -345,11 +367,13 @@ function createSseResponse(res, requestId) {
       res.write("data: [DONE]\n\n");
       res.end();
     },
-    fail(error) {
+    fail(error, metadata = {}) {
       if (res.destroyed || res.writableEnded) return;
       writeChunk(`\n\n[Error: ${error.message}]`, "error", {
+        ...metadata,
         error: true,
         type: error.name || "Error",
+        message: error.message,
       });
       res.write("data: [DONE]\n\n");
       res.end();
@@ -365,10 +389,17 @@ async function handleChat(req, res) {
   const fullPrompt = buildPrompt(body.messages || []);
   const cwd = await resolveWorkspacePath(req.headers["x-workspace-path"], fullPrompt);
   const selection = parseAgentSelection(body.model || "", req.headers["x-agent-mode"]);
-  const effectiveMode = selection.mode || analyzeTask(fullPrompt).routing;
+  const taskInfo = analyzeTask(fullPrompt);
+  const effectiveMode = selection.mode || taskInfo.routing;
   assertAgentsEnabled(effectiveMode);
 
-  const requestId = `chatcmpl-${randomUUID()}`;
+  const requestId = resolveRequestId(req.headers["x-open-cursor-request-id"]);
+  const journal = shouldJournalWorkspace(selection.mode, taskInfo)
+    ? await startWorkspaceReceipt(cwd, {
+        id: requestId,
+        mode: selection.mode || "auto",
+      })
+    : null;
   const lifetime = bindRequestLifetime(req, res);
 
   if (stream) {
@@ -387,12 +418,20 @@ async function handleChat(req, res) {
         },
       });
 
+      const workspaceReceipt = await finishWorkspaceReceipt(journal, { status: "completed" });
       sse.finish(responseModel(result.agent, selection.model), {
         agent: result.agent,
         active_executions: activeExecutionCount(),
+        ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
       });
     } catch (error) {
-      if (!lifetime.signal.aborted) sse.fail(error);
+      const workspaceReceipt = await finishWorkspaceReceipt(journal, {
+        status: lifetime.signal.aborted ? "cancelled" : "failed",
+        error,
+      });
+      if (!lifetime.signal.aborted) {
+        sse.fail(error, workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {});
+      }
     } finally {
       lifetime.cleanup();
     }
@@ -406,6 +445,8 @@ async function handleChat(req, res) {
       model: selection.model,
       signal: lifetime.signal,
     });
+
+    const workspaceReceipt = await finishWorkspaceReceipt(journal, { status: "completed" });
 
     sendJSON(
       res,
@@ -426,10 +467,18 @@ async function handleChat(req, res) {
         open_cursor: {
           agent: result.agent,
           active_executions: activeExecutionCount(),
+          ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
         },
       },
       { "X-Open-Cursor-Request-Id": requestId }
     );
+  } catch (error) {
+    const workspaceReceipt = await finishWorkspaceReceipt(journal, {
+      status: lifetime.signal.aborted ? "cancelled" : "failed",
+      error,
+    });
+    if (workspaceReceipt) error.workspaceReceipt = workspaceReceipt;
+    throw error;
   } finally {
     lifetime.cleanup();
   }
@@ -580,6 +629,18 @@ async function handleAgents(req, res) {
   });
 }
 
+function handleExecutionReceipt(req, res, url) {
+  rejectBrowserOrigin(req);
+  const prefix = "/v1/execution-receipts/";
+  const id = decodeURIComponent(url.pathname.slice(prefix.length));
+  if (!id || id.includes("/")) {
+    throw new HttpError(400, "Invalid execution receipt id");
+  }
+  const receipt = getExecutionReceipt(id);
+  if (!receipt) throw new HttpError(404, "Execution receipt not found or expired");
+  sendJSON(res, 200, { object: "execution.receipt", receipt });
+}
+
 async function handleHealth(req, res) {
   const codex = await agentStatus("codex");
   const antigravity = await agentStatus("antigravity");
@@ -637,6 +698,11 @@ const server = createServer(async (req, res) => {
       const workspace = url.searchParams.get("workspace") || req.headers["x-workspace-path"];
       const data = await getMonitorData(workspace);
       sendJSON(res, 200, data);
+    } else if (
+      url.pathname.startsWith("/v1/execution-receipts/") &&
+      req.method === "GET"
+    ) {
+      handleExecutionReceipt(req, res, url);
     } else if (url.pathname === "/health" && req.method === "GET") {
       await handleHealth(req, res);
     } else {
@@ -716,10 +782,12 @@ export {
   assertAgentsEnabled,
   buildPrompt,
   formatCollaborativeResult,
+  getExecutionReceipt,
   orchestrate,
   parseAgentSelection,
   rejectBrowserOrigin,
   requiredAgentsForMode,
+  resolveRequestId,
   resolveWorkspacePath,
   runProcess,
   server,
