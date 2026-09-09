@@ -30,7 +30,8 @@
       "refine"
     ],
     "reviewerWorkingDirectory": "detached-temporary",
-    "workspaceWriter": "codex"
+    "workspaceWriter": "codex",
+    "maxReviewCycles": 2
   },
   "agents": {
     "codex": {

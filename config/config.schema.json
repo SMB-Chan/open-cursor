@@ -111,7 +111,8 @@
         "pipeline",
         "collaborative",
         "reviewerWorkingDirectory",
-        "workspaceWriter"
+        "workspaceWriter",
+        "maxReviewCycles"
       ],
       "properties": {
         "pipeline": {
@@ -144,13 +145,20 @@
             }
           ],
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "Fixed sequential stages. The verdict-driven loop may repeat review/refine within this order; review always precedes refine."
         },
         "reviewerWorkingDirectory": {
           "const": "detached-temporary"
         },
         "workspaceWriter": {
           "const": "codex"
+        },
+        "maxReviewCycles": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Maximum number of review rounds in the collaborative verdict-driven loop. Each round may run a refinement between reviews. Bounded to keep autonomous loops terminating."
         }
       }
     },

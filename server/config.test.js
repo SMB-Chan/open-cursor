@@ -30,6 +30,7 @@ function sampleConfig() {
       collaborative: ["plan", "implement", "review", "refine"],
       reviewerWorkingDirectory: "detached-temporary",
       workspaceWriter: "codex",
+      maxReviewCycles: 2,
     },
     agents: {
       codex: {
@@ -76,6 +77,7 @@ test("configuration file provides runtime defaults", () => {
   assert.equal(parsed.agents.antigravity.binary, "/home/demo/bin/agy");
   assert.equal(parsed.agents.mimo.workspaceAccess, "none");
   assert.equal(parsed.agents.mimo.model, "mimo-v2.5-pro");
+  assert.equal(parsed.collaboration.maxReviewCycles, 2);
   assert.deepEqual(parsed.overrides, []);
 });
 
@@ -127,6 +129,44 @@ test("invalid environment overrides fail instead of silently falling back", () =
     () => parseRuntimeConfig(sampleConfig(), { MIMO_ENABLED: "maybe" }),
     (error) => error instanceof RuntimeConfigError && /MIMO_ENABLED/.test(error.message)
   );
+});
+
+test("review loop cycle bound comes from the file and accepts a validated override", () => {
+  const raised = parseRuntimeConfig(
+    { ...sampleConfig(), collaboration: { ...sampleConfig().collaboration, maxReviewCycles: 3 } },
+    {},
+    "/home/demo"
+  );
+  assert.equal(raised.collaboration.maxReviewCycles, 3);
+
+  const overridden = parseRuntimeConfig(
+    sampleConfig(),
+    { BRIDGE_MAX_REVIEW_CYCLES: "4" },
+    "/home/demo"
+  );
+  assert.equal(overridden.collaboration.maxReviewCycles, 4);
+  assert.deepEqual(overridden.overrides, ["BRIDGE_MAX_REVIEW_CYCLES"]);
+});
+
+test("review loop cycle bound rejects out-of-range and malformed values", () => {
+  for (const badFile of [0, 5, -1, 2.5]) {
+    assert.throws(
+      () =>
+        parseRuntimeConfig(
+          { ...sampleConfig(), collaboration: { ...sampleConfig().collaboration, maxReviewCycles: badFile } },
+          {},
+          "/home/demo"
+        ),
+      (error) => error instanceof RuntimeConfigError && /maxReviewCycles/.test(error.message)
+    );
+  }
+
+  for (const badEnv of ["0", "5", "junk", "2.5"]) {
+    assert.throws(
+      () => parseRuntimeConfig(sampleConfig(), { BRIDGE_MAX_REVIEW_CYCLES: badEnv }),
+      (error) => error instanceof RuntimeConfigError && /BRIDGE_MAX_REVIEW_CYCLES/.test(error.message)
+    );
+  }
 });
 
 test("runtime defaults populate missing process environment without replacing overrides", () => {

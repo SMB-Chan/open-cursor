@@ -111,6 +111,7 @@ function validateRawConfig(raw) {
     ["plan", "implement", "review", "refine"],
     "collaboration.collaborative"
   );
+  integer(collaboration.maxReviewCycles, "collaboration.maxReviewCycles", 1, 4);
   if (collaboration.workspaceWriter !== "codex") {
     throw new RuntimeConfigError("collaboration.workspaceWriter must be codex");
   }
@@ -258,18 +259,30 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
     workspaceAccess: "none",
   };
 
+  // Built before the frozen result so environment-override bookkeeping for the
+  // review-loop bound is recorded in the same overrides list as every other knob.
+  const collaboration = {
+    pipeline: Object.freeze([...raw.collaboration.pipeline]),
+    collaborative: Object.freeze([...raw.collaboration.collaborative]),
+    reviewerWorkingDirectory: raw.collaboration.reviewerWorkingDirectory,
+    workspaceWriter: raw.collaboration.workspaceWriter,
+    maxReviewCycles: envInteger(
+      env,
+      "BRIDGE_MAX_REVIEW_CYCLES",
+      raw.collaboration.maxReviewCycles,
+      1,
+      4,
+      overrides
+    ),
+  };
+
   return Object.freeze({
     source,
     overrides: Object.freeze([...new Set(overrides)]),
     bridge: Object.freeze(bridge),
     execution: Object.freeze(execution),
     context: Object.freeze(context),
-    collaboration: Object.freeze({
-      pipeline: Object.freeze([...raw.collaboration.pipeline]),
-      collaborative: Object.freeze([...raw.collaboration.collaborative]),
-      reviewerWorkingDirectory: raw.collaboration.reviewerWorkingDirectory,
-      workspaceWriter: raw.collaboration.workspaceWriter,
-    }),
+    collaboration: Object.freeze(collaboration),
     agents: Object.freeze({
       codex: Object.freeze({ ...raw.agents.codex, binary: codexBinary }),
       antigravity: Object.freeze({ ...raw.agents.antigravity, binary: antigravityBinary }),

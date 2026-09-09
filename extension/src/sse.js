@@ -26,6 +26,13 @@ function parseSseBlock(block) {
     delta: typeof delta === "string" ? delta : "",
     agent: typeof metadata.agent === "string" ? metadata.agent : null,
     phase: typeof metadata.phase === "string" ? metadata.phase : null,
+    iteration: typeof metadata.iteration === "number" && Number.isFinite(metadata.iteration)
+      ? metadata.iteration
+      : null,
+    verdict: typeof metadata.verdict === "string" ? metadata.verdict : null,
+    reviewCycles: typeof metadata.reviewCycles === "number" && Number.isFinite(metadata.reviewCycles)
+      ? metadata.reviewCycles
+      : null,
     metadata,
   };
 }

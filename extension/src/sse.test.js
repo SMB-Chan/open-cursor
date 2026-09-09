@@ -26,6 +26,23 @@ test("parseSseBlock extracts content and Open-Cursor metadata", () => {
   assert.equal(parsed.phase, "implementation");
 });
 
+test("parseSseBlock exposes review-loop iteration and verdict metadata", () => {
+  const verdict = parseSseBlock(
+    'data: {"choices":[{"delta":{"content":""}}],"open_cursor":{"agent":"auto","phase":"review-verdict","iteration":2,"verdict":"changes_requested","reviewCycles":3}}'
+  );
+
+  assert.equal(verdict.iteration, 2);
+  assert.equal(verdict.verdict, "changes_requested");
+  assert.equal(verdict.reviewCycles, 3);
+
+  const plain = parseSseBlock(
+    'data: {"choices":[{"delta":{"content":"x"}}],"open_cursor":{"agent":"codex","phase":"response"}}'
+  );
+  assert.equal(plain.iteration, null);
+  assert.equal(plain.verdict, null);
+  assert.equal(plain.reviewCycles, null);
+});
+
 test("parseSseBlock recognizes DONE and ignores comments", () => {
   assert.deepEqual(parseSseBlock("data: [DONE]"), { kind: "done" });
   assert.deepEqual(parseSseBlock(": keepalive"), { kind: "ignore" });

@@ -9,7 +9,7 @@ Current backends and orchestration paths:
 - **Xiaomi MiMo** — optional remote, API-key/token-plan-backed **read-only** solution drafting
 - **Auto** — side-effect-aware routing that never substitutes a read-only provider for a workspace writer
 - **Pipeline** — Gemini Plan → Codex Implement
-- **Collaborative** — Gemini Plan → Codex Implement → Gemini Review → Codex Refine
+- **Collaborative** — Gemini Plan → Codex Implement → verdict-driven Review loop (bounded Review → Refine cycles until the reviewer approves, or the cycle bound is reached)
 
 > The local Open-Cursor bridge does not add its own usage charge. Provider billing/authentication is per-agent: Codex and Antigravity may use subscription-backed authentication, while the optional MiMo integration uses an external API key/token plan. Verify the active provider configuration before use.
 
@@ -269,6 +269,7 @@ BRIDGE_CONTEXT_MAX_FILES
 BRIDGE_CONTEXT_MAX_BYTES
 BRIDGE_CONTEXT_FILE_BYTES
 BRIDGE_DIFF_MAX_BYTES
+BRIDGE_MAX_REVIEW_CYCLES
 CODEX_BIN
 AGY_BIN
 CODEX_ENABLED
@@ -303,6 +304,7 @@ Several properties are validated as invariants rather than freely configurable k
 | combined child stdout/stderr | 8 MiB |
 | per-agent execution timeout | 10 minutes |
 | SIGTERM → SIGKILL grace | 1.5 seconds |
+| collaborative review-loop cycles | 2 (validated range 1–4) |
 
 `GET /health` and `GET /v1/agents` expose non-sensitive execution state such as active execution count and configured limits. Prompts and workspace paths are not included.
 
@@ -392,11 +394,17 @@ CI also validates shell launcher syntax and configuration JSON syntax.
 
 ## Current direction
 
-The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model.
+The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model. The collaborative workflow is now a closed autonomous loop: the reviewer's verdict decides whether refinement runs, refinement is re-reviewed, and non-convergence is reported honestly (2.5).
 
 Near-term priorities are:
 
-1. add installation/upgrade smoke tests and release packaging
+1. include safe bounded excerpts for newly-created/untracked files in review context — this directly improves re-review quality inside the loop
+2. add optional stronger OS-level isolation for detached reviewer processes when a supported sandbox facility is available
+3. make automatic routing rules configurable without weakening the fixed write-safety invariants
+4. surface loop telemetry (verdict timeline per request) in the mobile dashboard and agent status view
+d release packaging
 2. include safe bounded excerpts for newly-created/untracked files in review context
 3. add optional stronger OS-level isolation for detached reviewer processes when a supported sandbox facility is available
+4. make automatic routing rules configurable without weakening the fixed write-safety invariants
+ion for detached reviewer processes when a supported sandbox facility is available
 4. make automatic routing rules configurable without weakening the fixed write-safety invariants

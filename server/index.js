@@ -410,18 +410,27 @@ async function handleChat(req, res) {
         mode: selection.mode,
         model: selection.model,
         signal: lifetime.signal,
-        onEvent: ({ text, agent, phase }) => {
+        onEvent: ({ text, agent, phase, iteration, verdict, reviewCycles }) => {
           sse.delta(text, responseModel(agent, selection.model), {
             agent,
             phase,
+            ...(iteration !== undefined ? { iteration } : {}),
+            ...(verdict !== undefined ? { verdict } : {}),
+            ...(reviewCycles !== undefined ? { reviewCycles } : {}),
           });
         },
+        maxReviewCycles: runtimeConfig.collaboration.maxReviewCycles,
       });
 
       const workspaceReceipt = await finishWorkspaceReceipt(journal, { status: "completed" });
       sse.finish(responseModel(result.agent, selection.model), {
         agent: result.agent,
         active_executions: activeExecutionCount(),
+        ...(result.reviewVerdict !== undefined ? { review_verdict: result.reviewVerdict } : {}),
+        ...(result.reviewCycles !== undefined ? { review_cycles: result.reviewCycles } : {}),
+        ...(result.reviewConverged !== undefined
+          ? { review_converged: result.reviewConverged }
+          : {}),
         ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
       });
     } catch (error) {
@@ -444,6 +453,7 @@ async function handleChat(req, res) {
       mode: selection.mode,
       model: selection.model,
       signal: lifetime.signal,
+      maxReviewCycles: runtimeConfig.collaboration.maxReviewCycles,
     });
 
     const workspaceReceipt = await finishWorkspaceReceipt(journal, { status: "completed" });
@@ -467,6 +477,11 @@ async function handleChat(req, res) {
         open_cursor: {
           agent: result.agent,
           active_executions: activeExecutionCount(),
+          ...(result.reviewVerdict !== undefined ? { review_verdict: result.reviewVerdict } : {}),
+          ...(result.reviewCycles !== undefined ? { review_cycles: result.reviewCycles } : {}),
+          ...(result.reviewConverged !== undefined
+            ? { review_converged: result.reviewConverged }
+            : {}),
           ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
         },
       },
