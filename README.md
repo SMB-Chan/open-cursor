@@ -420,5 +420,6 @@ Near-term priorities are:
 
 1. add optional stronger OS-level isolation for detached reviewer processes when a supported sandbox facility is available
 2. make automatic routing rules configurable without weakening the fixed write-safety invariants
-3. surface loop telemetry (verdict timeline per request) in the mobile dashboard and agent status view
-4. support reviewer-directed follow-up reads so bounded budgets stay small while review precision improves
+3. support reviewer-directed follow-up reads so bounded budgets stay small while review precision improves
+
+The mobile dashboard status tab renders live execution telemetry, including the review-loop round (`n/max`), the latest parsed verdict, and convergence state (2.6).
