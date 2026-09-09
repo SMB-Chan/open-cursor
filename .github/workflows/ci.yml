@@ -47,6 +47,12 @@ jobs:
       - name: Test extension registry upgrades
         run: node --test scripts/register-extension.test.mjs
 
+      - name: Check Antigravity adapter
+        run: node --check bin/agy-open-cursor && node --check scripts/agy-adapter.test.cjs
+
+      - name: Test Antigravity adapter
+        run: node --test scripts/agy-adapter.test.cjs
+
       - name: Smoke test installer and reinstall
         run: bash scripts/install-smoke-test.sh
 
