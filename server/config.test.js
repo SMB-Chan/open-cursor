@@ -17,6 +17,7 @@ function sampleConfig() {
       killGraceMs: 1500,
       maxBodyBytes: 1048576,
       maxOutputBytes: 8388608,
+      reviewerSandbox: "off",
     },
     context: {
       maxFiles: 300,
@@ -74,6 +75,7 @@ test("configuration file provides runtime defaults", () => {
   assert.equal(parsed.bridge.host, "127.0.0.1");
   assert.equal(parsed.bridge.allowRemote, false);
   assert.equal(parsed.execution.agentTimeoutMs, 600000);
+  assert.equal(parsed.execution.reviewerSandbox, "off");
   assert.equal(parsed.context.maxBytes, 131072);
   assert.equal(parsed.context.untrackedMaxBytes, 24576);
   assert.equal(parsed.agents.antigravity.binary, "/home/demo/bin/agy");
@@ -91,6 +93,7 @@ test("environment variables override file values and are reported by name only",
       BRIDGE_AGENT_TIMEOUT_MS: "120000",
       BRIDGE_CONTEXT_MAX_FILES: "500",
       BRIDGE_UNTRACKED_MAX_BYTES: "0",
+      BRIDGE_REVIEWER_SANDBOX: "auto",
       BRIDGE_ALLOW_REMOTE: "1",
       AGY_BIN: "/opt/agy",
       MIMO_ENABLED: "0",
@@ -103,6 +106,7 @@ test("environment variables override file values and are reported by name only",
   assert.equal(parsed.bridge.port, 9999);
   assert.equal(parsed.bridge.allowRemote, true);
   assert.equal(parsed.execution.agentTimeoutMs, 120000);
+  assert.equal(parsed.execution.reviewerSandbox, "auto");
   assert.equal(parsed.context.maxFiles, 500);
   assert.equal(parsed.context.untrackedMaxBytes, 0);
   assert.equal(parsed.agents.antigravity.binary, "/opt/agy");
@@ -116,6 +120,7 @@ test("environment variables override file values and are reported by name only",
       "BRIDGE_AGENT_TIMEOUT_MS",
       "BRIDGE_CONTEXT_MAX_FILES",
       "BRIDGE_UNTRACKED_MAX_BYTES",
+      "BRIDGE_REVIEWER_SANDBOX",
       "BRIDGE_ALLOW_REMOTE",
       "AGY_BIN",
       "MIMO_ENABLED",
@@ -123,6 +128,30 @@ test("environment variables override file values and are reported by name only",
       "MIMO_MODEL",
     ])
   );
+});
+
+test("reviewer sandbox mode accepts only documented values from file and environment", () => {
+  assert.throws(
+    () =>
+      parseRuntimeConfig(
+        { ...sampleConfig(), execution: { ...sampleConfig().execution, reviewerSandbox: "firejail" } },
+        {},
+        "/home/demo"
+      ),
+    (error) => error instanceof RuntimeConfigError && /reviewerSandbox/.test(error.message)
+  );
+  assert.throws(
+    () => parseRuntimeConfig(sampleConfig(), { BRIDGE_REVIEWER_SANDBOX: "landlock" }),
+    (error) => error instanceof RuntimeConfigError && /BRIDGE_REVIEWER_SANDBOX/.test(error.message)
+  );
+
+  const explicit = parseRuntimeConfig(
+    sampleConfig(),
+    { BRIDGE_REVIEWER_SANDBOX: "bubblewrap" },
+    "/home/demo"
+  );
+  assert.equal(explicit.execution.reviewerSandbox, "bubblewrap");
+  assert.deepEqual(explicit.overrides, ["BRIDGE_REVIEWER_SANDBOX"]);
 });
 
 test("invalid environment overrides fail instead of silently falling back", () => {

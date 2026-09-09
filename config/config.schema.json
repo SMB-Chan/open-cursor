@@ -47,7 +47,8 @@
         "agentTimeoutMs",
         "killGraceMs",
         "maxBodyBytes",
-        "maxOutputBytes"
+        "maxOutputBytes",
+        "reviewerSandbox"
       ],
       "properties": {
         "agentTimeoutMs": {
@@ -65,6 +66,15 @@
         "maxOutputBytes": {
           "type": "integer",
           "minimum": 1024
+        },
+        "reviewerSandbox": {
+          "type": "string",
+          "enum": [
+            "off",
+            "auto",
+            "bubblewrap"
+          ],
+          "description": "Optional OS-level isolation for detached reviewer processes. off keeps the historical detached-temporary behavior; auto uses bubblewrap when a probe succeeds and proceeds unsandboxed otherwise; bubblewrap requires a working facility and fails closed (HTTP 503) when unavailable. Never applied to workspace writers."
         }
       }
     },

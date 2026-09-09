@@ -64,6 +64,18 @@ Loop safety properties:
 - the fixed stage order is unchanged: review always precedes refine; refine is always followed by another review
 - non-convergence is reported as non-convergence — a run that exhausts its cycles is never dressed up as a success
 
+A detached working directory reduces accidental workspace coupling and avoids passing the workspace path as the working directory, but by itself it is **not an operating-system sandbox**: the upstream CLI still runs with the permissions of the local user. Do not treat it as a security boundary against a malicious local process or compromised CLI.
+
+For stronger isolation, detached reviewer processes can additionally run inside a bubblewrap mount namespace via `execution.reviewerSandbox` (env `BRIDGE_REVIEWER_SANDBOX`):
+
+| Mode | Behavior |
+| --- | --- |
+| `off` | historical detached-temporary behavior (default) |
+| `auto` | use bubblewrap when a probe succeeds; otherwise run unsandboxed and report `auto-unavailable` |
+| `bubblewrap` | require a working bubblewrap facility; requests fail closed (HTTP 503) when the probe fails |
+
+Inside the sandbox the whole filesystem is read-only; only the reviewer's isolated temporary directory, `GEMINI_HOME` (so OAuth token refresh keeps working), `/tmp`, and `/run` are writable. The workspace therefore cannot be modified by reviewer processes that are never supposed to write to it. The sandbox is applied only to detached reviewers — workspace writers (Codex, explicitly selected Antigravity) are never wrapped. The active mode is reported as `reviewerIsolation` in execution state (`GET /monitor`).
+
 ## Repository context pack
 
 Planning/review does not blindly copy the repository. `server/context.js` creates a bounded project view containing:
@@ -284,6 +296,7 @@ BRIDGE_CONTEXT_MAX_BYTES
 BRIDGE_CONTEXT_FILE_BYTES
 BRIDGE_DIFF_MAX_BYTES
 BRIDGE_UNTRACKED_MAX_BYTES
+BRIDGE_REVIEWER_SANDBOX
 BRIDGE_MAX_REVIEW_CYCLES
 CODEX_BIN
 AGY_BIN
@@ -369,6 +382,7 @@ Current protections include:
 - secret-like path omission from generated context/review evidence
 - bounded context generation
 - detached temporary working directories for automatic Gemini planning/review
+- optional bubblewrap mount-namespace isolation for those detached reviewers (`execution.reviewerSandbox: off | auto | bubblewrap`; the explicit mode fails closed on a failed facility probe)
 - preservation instructions for pre-existing user changes
 - managed-process ownership in the extension
 - webview Content Security Policy
@@ -401,6 +415,7 @@ Tests cover, among other things:
 - bounded review-loop policy (approve/refine/terminate decisions)
 - full orchestrate() review-loop behavior against stub agent binaries: convergence, approval short-circuit, and honest non-convergence at the cycle bound
 - untracked-file review excerpts: inclusion on request, secret-like/gitignored omission, per-file clipping, and total budget enforcement
+- reviewer sandbox: strict mode parsing, narrow writable-binds profile, facility probing via stub binaries, auto vs fail-closed resolution, and end-to-end proof that detached reviewers are wrapped while the workspace writer is not
 
 Extension checks/tests:
 
@@ -414,12 +429,12 @@ CI also validates shell launcher syntax and configuration JSON syntax.
 
 ## Current direction
 
-The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model. The collaborative workflow is now a closed autonomous loop: the reviewer's verdict decides whether refinement runs, refinement is re-reviewed against refreshed evidence (including bounded excerpts of new/untracked files), and non-convergence is reported honestly (2.5/2.6).
+The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model. The collaborative workflow is now a closed autonomous loop: the reviewer's verdict decides whether refinement runs, refinement is re-reviewed against refreshed evidence (including bounded excerpts of new/untracked files), and non-convergence is reported honestly (2.5/2.6). Detached reviewers can additionally be isolated in an optional bubblewrap mount namespace (2.7).
 
 Near-term priorities are:
 
-1. add optional stronger OS-level isolation for detached reviewer processes when a supported sandbox facility is available
-2. make automatic routing rules configurable without weakening the fixed write-safety invariants
-3. support reviewer-directed follow-up reads so bounded budgets stay small while review precision improves
+1. make automatic routing rules configurable without weakening the fixed write-safety invariants
+2. support reviewer-directed follow-up reads so bounded budgets stay small while review precision improves
+3. release packaging with pinned, reproducible install/upgrade verification
 
 The mobile dashboard status tab renders live execution telemetry, including the review-loop round (`n/max`), the latest parsed verdict, and convergence state (2.6).

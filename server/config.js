@@ -94,6 +94,11 @@ function validateRawConfig(raw) {
   integer(execution.killGraceMs, "execution.killGraceMs", 100);
   integer(execution.maxBodyBytes, "execution.maxBodyBytes", 1024);
   integer(execution.maxOutputBytes, "execution.maxOutputBytes", 1024);
+  if (!["off", "auto", "bubblewrap"].includes(execution.reviewerSandbox)) {
+    throw new RuntimeConfigError(
+      "execution.reviewerSandbox must be one of: off, auto, bubblewrap"
+    );
+  }
 
   const context = raw.context || {};
   integer(context.maxFiles, "context.maxFiles", 10, 5000);
@@ -162,6 +167,14 @@ function validateRawConfig(raw) {
   return raw;
 }
 
+function parseReviewerSandboxEnv(env, overrides, fallback) {
+  const raw = envString(env, "BRIDGE_REVIEWER_SANDBOX", fallback, overrides);
+  if (!["off", "auto", "bubblewrap"].includes(raw)) {
+    throw new RuntimeConfigError("BRIDGE_REVIEWER_SANDBOX must be one of: off, auto, bubblewrap");
+  }
+  return raw;
+}
+
 function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = DEFAULT_CONFIG_PATH) {
   validateRawConfig(raw);
   const overrides = [];
@@ -205,6 +218,7 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
       Number.MAX_SAFE_INTEGER,
       overrides
     ),
+    reviewerSandbox: parseReviewerSandboxEnv(env, overrides, raw.execution.reviewerSandbox),
   };
 
   const context = {
@@ -314,6 +328,7 @@ function applyRuntimeDefaultsToEnv(config, env = process.env) {
     BRIDGE_KILL_GRACE_MS: config.execution.killGraceMs,
     BRIDGE_MAX_BODY_BYTES: config.execution.maxBodyBytes,
     BRIDGE_MAX_OUTPUT_BYTES: config.execution.maxOutputBytes,
+    BRIDGE_REVIEWER_SANDBOX: config.execution.reviewerSandbox,
     BRIDGE_CONTEXT_MAX_FILES: config.context.maxFiles,
     BRIDGE_CONTEXT_MAX_BYTES: config.context.maxBytes,
     BRIDGE_CONTEXT_FILE_BYTES: config.context.maxFileBytes,

@@ -13,6 +13,7 @@ import {
 } from "./context.js";
 import { compressHandoff, safePromptArg } from "./compressor.js";
 import { updateExecutionState } from "./monitor.js";
+import { buildSandboxLaunch, parseSandboxMode, probeSandboxFacility, resolveReviewerSandbox } from "./sandbox.js";
 import {
   DEFAULT_REVIEW_CYCLES,
   VERDICT_MARKER_APPROVED,
@@ -24,12 +25,47 @@ import {
   parseReviewVerdict,
 } from "./verdict.js";
 
-const VERSION = "2.6.0";
+const VERSION = "2.7.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");
 const CODEX_HOME = join(homedir(), ".codex");
 const GEMINI_HOME = join(homedir(), ".gemini");
+
+// Detached-reviewer OS isolation (bubblewrap). Mode and wrapper binary are
+// read at call time so tests can exercise each mode in one process; probe
+// results are cached per mode+binary pair.
+let reviewerSandboxCache = null;
+function reviewerSandboxOptions() {
+  return {
+    mode: parseSandboxMode(process.env.BRIDGE_REVIEWER_SANDBOX ?? "off", "off"),
+    bwrapBin: process.env.BWRAP_BIN || "bwrap",
+    geminiHome: existsSync(GEMINI_HOME) ? GEMINI_HOME : null,
+  };
+}
+
+async function resolveReviewerSandboxCached() {
+  const options = reviewerSandboxOptions();
+  if (options.mode === "off") {
+    return { active: false, label: "off", bwrapBin: options.bwrapBin, geminiHome: null };
+  }
+  const cacheKey = `${options.mode}:${options.bwrapBin}:${options.geminiHome ?? ""}`;
+  if (!reviewerSandboxCache || reviewerSandboxCache.key !== cacheKey) {
+    reviewerSandboxCache = {
+      key: cacheKey,
+      value: await resolveReviewerSandbox({ ...options, probe: probeSandboxFacility }),
+    };
+  }
+  return reviewerSandboxCache.value;
+}
+
+async function describeReviewerIsolation() {
+  try {
+    return (await resolveReviewerSandboxCached()).label;
+  } catch (error) {
+    return `required-unavailable (${error.message})`;
+  }
+}
 const MAX_OUTPUT_BYTES = envInt("BRIDGE_MAX_OUTPUT_BYTES", 8 * 1024 * 1024, 1024);
 const AGENT_TIMEOUT_MS = envInt("BRIDGE_AGENT_TIMEOUT_MS", 10 * 60 * 1000, 1000);
 const KILL_GRACE_MS = envInt("BRIDGE_KILL_GRACE_MS", 1500, 100);
@@ -310,10 +346,10 @@ function mapAntigravityModel(model) {
   return model;
 }
 
-function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
+function runAntigravity(prompt, { cwd, model, signal, onChunk, home, sandbox } = {}) {
   const actualCwd = cwd || process.cwd();
   const safePrompt = safePromptArg(prompt, 64 * 1024);
-  const args = [
+  let args = [
     `-p=${safePrompt}`,
     "--output-format",
     "text",
@@ -325,26 +361,42 @@ function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
   ];
   const targetModel = mapAntigravityModel(model);
   if (targetModel) args.push("--model", targetModel);
+
+  let command = AGY_BIN;
+  const env = {
+    ...process.env,
+    HOME: home || process.env.HOME,
+    PWD: actualCwd,
+    OLDPWD: "",
+    INIT_CWD: "",
+    VSCODE_CWD: "",
+    GEMINI_HOME,
+  };
+
+  // Optional bubblewrap wrap for detached reviewers only: the sandbox prefix
+  // precedes the real CLI vector after the profile's "--" separator.
+  const launch = sandbox ? buildSandboxLaunch({ sandbox, isolatedDir: actualCwd }) : null;
+  if (launch) {
+    command = launch.command;
+    args = [...launch.args, AGY_BIN, ...args];
+    env.XDG_RUNTIME_DIR = "";
+  }
+
   return runProcess({
     agent: "antigravity",
-    command: AGY_BIN,
+    command,
     args,
     cwd: actualCwd,
     signal,
     onStdout: onChunk,
-    env: {
-      ...process.env,
-      HOME: home || process.env.HOME,
-      PWD: actualCwd,
-      OLDPWD: "",
-      INIT_CWD: "",
-      VSCODE_CWD: "",
-      GEMINI_HOME,
-    },
+    env,
   });
 }
 
-function runAntigravityDetached(prompt, { model = "pro", signal, onChunk } = {}) {
+async function runAntigravityDetached(prompt, { model = "pro", signal, onChunk } = {}) {
+  // Sandbox resolution happens before the temp directory is created so a
+  // fail-closed sandbox mode never leaves scratch directories behind.
+  const sandbox = await resolveReviewerSandboxCached();
   return withIsolatedDirectory((directory) =>
     runAntigravity(prompt, {
       cwd: directory,
@@ -352,6 +404,9 @@ function runAntigravityDetached(prompt, { model = "pro", signal, onChunk } = {})
       model,
       signal,
       onChunk,
+      sandbox: sandbox.active
+        ? { active: true, bwrapBin: sandbox.bwrapBin, geminiHome: sandbox.geminiHome }
+        : null,
     })
   );
 }
@@ -966,6 +1021,7 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent, maxRevie
           activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
           progress: 15,
           reviewCycles: maxReviewCycles,
+          reviewerIsolation: await describeReviewerIsolation(),
           currentAction: "計画・設計フェーズ [gemini-3.1-pro-high]",
         });
 
@@ -1047,6 +1103,7 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent, maxRevie
             agent: "antigravity",
             iteration: cycle,
             reviewCycles: maxReviewCycles,
+            reviewerIsolation: await describeReviewerIsolation(),
             modelId: "gemini-3.1-pro-high",
             modelDisplayName: "Gemini 3.1 Pro (High)",
             activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],

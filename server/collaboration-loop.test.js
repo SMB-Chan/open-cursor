@@ -183,6 +183,82 @@ test("collaborative loop defaults to two review cycles when no bound is supplied
   assert.equal(result.reviewConverged, false);
 });
 
+test("explicit bubblewrap sandbox wraps detached reviewer runs and never wraps codex", async () => {
+  const bwrapStub = join(binsDir, "stub-bwrap.sh");
+  writeFileSync(
+    bwrapStub,
+    `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--" ]; then
+    shift
+    printf 'bwrap:%s\n' "\${1##*/}" >> "$STUB_STATE"
+    exec "$@"
+  fi
+  shift
+done
+printf 'bwrap-missing-separator\n' >> "$STUB_STATE"
+exit 1
+`
+  );
+  chmodSync(bwrapStub, 0o755);
+
+  resetState();
+  process.env.STUB_REVIEW_MODE = "approve";
+  process.env.BRIDGE_REVIEWER_SANDBOX = "bubblewrap";
+  process.env.BWRAP_BIN = bwrapStub;
+  try {
+    const events = [];
+    const result = await orchestrate("Add a feature", {
+      cwd: workspace,
+      mode: "collaborative",
+      maxReviewCycles: 2,
+      onEvent: (event) => events.push(event),
+    });
+
+    assert.equal(result.reviewConverged, true);
+
+    const calls = stubCalls();
+    const wrappedReviewerRuns = calls.filter((line) => line === "bwrap:stub-agy.mjs").length;
+    const probeRuns = calls.filter((line) => line === "bwrap:true").length;
+    const codexCount = calls.filter((line) => line === "codex").length;
+    assert.equal(wrappedReviewerRuns, 2, "plan and review must each run inside the sandbox wrapper");
+    assert.equal(probeRuns, 1, "the facility probe runs exactly once for the explicit mode");
+    assert.equal(codexCount, 1, "the workspace writer must never be sandboxed");
+    assert.equal(calls.filter((line) => line === "bwrap-missing-separator").length, 0);
+
+    const verdictEvents = events.filter((event) => event.phase === "review-verdict");
+    assert.equal(verdictEvents.length, 1, "the reviewer still produces verdicts inside the wrapper");
+  } finally {
+    delete process.env.BRIDGE_REVIEWER_SANDBOX;
+    delete process.env.BWRAP_BIN;
+  }
+});
+
+test("explicit sandbox mode fails closed when the facility probe fails", async () => {
+  const failingBwrap = join(binsDir, "stub-bwrap-failing.sh");
+  writeFileSync(failingBwrap, "#!/bin/sh\nexit 9\n");
+  chmodSync(failingBwrap, 0o755);
+
+  resetState();
+  process.env.STUB_REVIEW_MODE = "approve";
+  process.env.BRIDGE_REVIEWER_SANDBOX = "bubblewrap";
+  process.env.BWRAP_BIN = failingBwrap;
+  try {
+    await assert.rejects(
+      orchestrate("Add a feature", {
+        cwd: workspace,
+        mode: "collaborative",
+        maxReviewCycles: 2,
+      }),
+      (error) => error?.name === "SandboxUnavailableError" || /sandbox/i.test(error?.message || "")
+    );
+    assert.equal(stubCalls().filter((line) => line === "agy").length, 0, "no agent may run when a required sandbox is unavailable");
+  } finally {
+    delete process.env.BRIDGE_REVIEWER_SANDBOX;
+    delete process.env.BWRAP_BIN;
+  }
+});
+
 test.after(() => {
   rmSync(testHome, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });

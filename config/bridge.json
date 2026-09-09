@@ -9,7 +9,8 @@
     "agentTimeoutMs": 600000,
     "killGraceMs": 1500,
     "maxBodyBytes": 1048576,
-    "maxOutputBytes": 8388608
+    "maxOutputBytes": 8388608,
+    "reviewerSandbox": "off"
   },
   "context": {
     "maxFiles": 300,
