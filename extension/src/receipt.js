@@ -4,6 +4,57 @@ function safePaths(value) {
     : [];
 }
 
+async function pollExecutionReceipt({
+  requestId,
+  bridgeUrl,
+  fetchFn = globalThis.fetch,
+  sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  attempts = 8,
+  delayMs = 125,
+  timeoutMs = 1000,
+} = {}) {
+  if (!requestId || typeof bridgeUrl !== "string" || typeof fetchFn !== "function") {
+    return null;
+  }
+
+  const maxAttempts = Number.isInteger(attempts) ? Math.max(1, attempts) : 8;
+  const retryDelay = Number.isInteger(delayMs) ? Math.max(0, delayMs) : 125;
+  const requestTimeout = Number.isInteger(timeoutMs) ? Math.max(1, timeoutMs) : 1000;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), requestTimeout);
+    let shouldRetry = false;
+
+    try {
+      const response = await fetchFn(
+        `${bridgeUrl}/v1/execution-receipts/${encodeURIComponent(requestId)}`,
+        { method: "GET", signal: controller.signal }
+      );
+
+      if (response?.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const receipt = payload?.receipt || null;
+        if (receipt && receipt.status !== "running") return receipt;
+        shouldRetry = true;
+      } else if (response?.status === 404) {
+        shouldRetry = true;
+      } else {
+        return null;
+      }
+    } catch {
+      shouldRetry = true;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!shouldRetry || attempt + 1 >= maxAttempts) break;
+    if (retryDelay > 0) await sleepFn(retryDelay);
+  }
+
+  return null;
+}
+
 function summarizeWorkspaceReceipt(receipt) {
   if (!receipt || typeof receipt !== "object") return null;
 
@@ -66,4 +117,4 @@ function summarizeWorkspaceReceipt(receipt) {
   return summary;
 }
 
-module.exports = { summarizeWorkspaceReceipt };
+module.exports = { pollExecutionReceipt, summarizeWorkspaceReceipt };
