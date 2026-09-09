@@ -6,7 +6,7 @@ Current agent backends:
 
 - **Codex CLI** — expected to use ChatGPT subscription OAuth
 - **Antigravity CLI** — expected to use Gemini AI Pro subscription mode
-- **Collaborative mode** — runs both agents and combines the results
+- **Collaborative mode** — runs both agents concurrently
 - **Pipeline mode** — Gemini/Antigravity analyzes first, then Codex implements
 
 > The bridge does not guarantee that an upstream CLI, subscription, or provider will remain available under the same terms. Verify the authentication/billing mode shown by each upstream CLI before use.
@@ -16,11 +16,15 @@ Current agent backends:
 ```text
 Cursor extension
     │
-    │  manages local bridge lifecycle
-    │  consumes SSE chat responses
+    │  owns bridge lifecycle when it starts the process
+    │  consumes live SSE deltas
+    │  aborts requests on Stop / panel close
     ▼
 127.0.0.1:9876
 Open-Cursor bridge
+    │
+    ├── request-scoped AbortSignal
+    ├── timeout / output limits
     ├── Codex CLI
     └── Antigravity CLI
 ```
@@ -101,11 +105,39 @@ The legacy shell-managed bridge can still be stopped with:
 ~/.cursor-codex-bridge/bin/stop-bridge
 ```
 
-## Chat UX
+## Chat streaming and cancellation
 
-The extension requests OpenAI-compatible SSE responses and renders deltas incrementally. This means the UI is already prepared for true process-level streaming from the bridge rather than waiting for one complete response.
+`stream: true` now streams child-process stdout through the bridge as it arrives instead of waiting for the complete CLI response and replaying it afterward.
 
-The chat panel also provides a **Stop** button. Cancelling closes the extension-side request immediately. The bridge-side child-process cancellation path is being implemented next so the upstream CLI process is also terminated when the client disconnects.
+The chat panel's **Stop** button aborts the fetch. The bridge observes the client disconnect and propagates cancellation to every child process associated with that request. It sends `SIGTERM` first and escalates to `SIGKILL` after the configured grace period if necessary.
+
+Pipeline mode streams the analysis phase first and the implementation phase second. Collaborative mode runs both agents concurrently and prefixes live lines with the originating agent so an OpenAI-compatible text consumer remains readable.
+
+SSE chunks also carry Open-Cursor metadata:
+
+```json
+{
+  "open_cursor": {
+    "agent": "codex",
+    "phase": "implementation"
+  }
+}
+```
+
+A single stable `chatcmpl-*` request ID is used for the complete stream and is also returned in the `X-Open-Cursor-Request-Id` response header.
+
+## Execution guardrails
+
+Every spawned agent is request-scoped and bounded by default:
+
+| Guardrail | Default |
+| --- | ---: |
+| request body | 1 MiB |
+| combined child stdout/stderr | 8 MiB |
+| per-agent execution timeout | 10 minutes |
+| SIGTERM → SIGKILL grace | 1.5 seconds |
+
+`GET /health` and `GET /v1/agents` report the current number of active executions plus the configured timeout/output limit without exposing prompts or workspace paths.
 
 ## Extension settings
 
@@ -123,10 +155,12 @@ The extension is dependency-free at runtime and loads `extension/src/extension.j
 
 | Mode | Behavior |
 | --- | --- |
-| `collaborative` | Codex and Antigravity run in parallel and results are combined |
+| `collaborative` | Codex and Antigravity run concurrently; live output identifies the originating agent |
 | `pipeline` | Antigravity analyzes first, then Codex receives the analysis and implements |
 | `codex` | Codex only |
 | `antigravity` | Antigravity only |
+
+Automatic task analysis recognizes common English and Japanese analysis/implementation terms. Explicit routing always takes precedence.
 
 Namespaced models are supported by the bridge, for example:
 
@@ -136,7 +170,7 @@ antigravity/pro
 antigravity/flash
 ```
 
-Routing aliases such as `codex` and `antigravity` are treated as routing modes, not forwarded as literal CLI model names.
+A namespaced model that conflicts with `X-Agent-Mode` is rejected instead of silently selecting an unexpected backend.
 
 ## Local API
 
@@ -161,12 +195,15 @@ Environment variables currently used by the server include:
 BRIDGE_PORT
 BRIDGE_HOST
 BRIDGE_MAX_BODY_BYTES
+BRIDGE_MAX_OUTPUT_BYTES
+BRIDGE_AGENT_TIMEOUT_MS
+BRIDGE_KILL_GRACE_MS
 BRIDGE_ALLOW_REMOTE
 CODEX_BIN
 AGY_BIN
 ```
 
-`config/bridge.json` is currently a reference configuration; runtime server settings are controlled by the environment variables and extension settings above.
+`config/bridge.json` is currently a documented reference configuration. `config/config.schema.json` describes its shape. Runtime server settings are still controlled by environment variables and extension settings rather than being loaded from that JSON file.
 
 ## Security boundary
 
@@ -178,8 +215,10 @@ Current protections include:
 - refusal to bind to non-loopback addresses unless `BRIDGE_ALLOW_REMOTE=1` is explicitly set
 - no permissive CORS headers
 - browser-origin requests rejected on `/v1/chat/completions`
-- request body size limits
-- validation of routing headers and workspace paths
+- request body and child-output limits
+- request-scoped process cancellation
+- execution timeouts with forced termination fallback
+- validation of routing headers, model namespace conflicts, message roles, and workspace paths
 - webview Content Security Policy
 - managed-process ownership: the extension does not kill a bridge process it did not start
 
@@ -195,6 +234,8 @@ npm run check
 npm test
 ```
 
+The bridge tests include real child-process checks for incremental stdout delivery, AbortSignal cancellation, and timeout termination.
+
 Extension syntax check:
 
 ```bash
@@ -208,15 +249,16 @@ The repository CI checks:
 - server JavaScript syntax
 - bridge regression tests
 - dependency-free extension source syntax
+- reference configuration JSON syntax
 
 ## Project status
 
-Open-Cursor is still early-stage. The current foundation now includes a hardened localhost boundary, reproducible installation, managed bridge lifecycle, status reporting, streaming-capable chat UI, and cancellation controls.
+Open-Cursor now has a hardened localhost boundary, reproducible installation, managed bridge lifecycle, real process-level SSE streaming, request-scoped cancellation, execution limits, basic observability, and English/Japanese routing heuristics.
 
 The next priorities are:
 
-1. bind request disconnect/abort to the spawned CLI process
-2. stream child-process stdout directly through SSE
-3. add per-request execution timeouts and structured execution metadata
-4. improve collaborative orchestration so agents critique and refine each other's work instead of merely concatenating responses
-5. add an upgrade path and release packaging once the execution core stabilizes
+1. redesign `collaborative` mode into a draft → critique → synthesis workflow instead of merely combining two independent answers
+2. render structured per-agent/phase metadata in the Cursor chat UI
+3. load and validate runtime configuration from `config/bridge.json` rather than keeping it reference-only
+4. add release packaging, upgrade/migration handling, and installation smoke tests
+5. add optional repository-context summarization so agents receive a compact project map before expensive tasks
