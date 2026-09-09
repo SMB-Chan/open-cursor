@@ -133,6 +133,22 @@ Bridge-only launch:
 ~/.cursor-codex-bridge/bin/open-cursor
 ```
 
+### Desktop actions and CLI tooling (v2.9.1)
+
+Right-clicking the Open-Cursor desktop icon (GNOME menu or デスクトップ) exposes one-click terminal actions:
+
+| Action | Runs |
+| --- | --- |
+| Live Monitor | `open-cursor-monitor` (live TUI) |
+| Agent Status | `open-cursor-status` (one-shot status; `--json` for machines) |
+| LLM Usage | `usage` (quota / rate limits / model IDs) |
+| Command List | `open-cursor-help` (full command + endpoint reference) |
+| Stop Bridge Server | `stop-bridge` |
+
+`open-cursor-terminal` resolves the terminal emulator (x-terminal-emulator / gnome-terminal / konsole / ghostty / xterm; override with `OPEN_CURSOR_TERMINAL`) and keeps the window open after one-shot commands finish.
+
+CLI shortcuts installed into `~/.local/bin`: `open-cursor`, `open-cursor-app`, `open-cursor-monitor`, `open-cursor-status`, `open-cursor-help`, `open-cursor-terminal`, `open-cursor-update`, `usage`, `stop-bridge`, `agy-open-cursor`. Running `open-cursor-help` prints the complete list with the HTTP API endpoints.
+
 ### Mobile dashboard security
 
 The mobile dashboard is **localhost-only by default**. Starting Open-Cursor no longer exposes execution APIs to the LAN automatically.

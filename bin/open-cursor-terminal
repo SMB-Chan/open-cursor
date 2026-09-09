@@ -1,0 +1,73 @@
+#!/bin/bash
+# open-cursor-terminal — run a script inside the user's terminal emulator.
+#
+# Usage:
+#   open-cursor-terminal --hold <script> [args...]   keep window open after exit
+#   open-cursor-terminal <script> [args...]          close when script exits
+#
+# Used by the desktop actions (Live Monitor / Agent Status / LLM Usage /
+# Command List) so GUI users get one-click terminal tooling.
+
+set -uo pipefail
+export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
+HOLD=false
+if [ "${1:-}" = "--hold" ]; then
+  HOLD=true
+  shift
+fi
+
+if [ $# -eq 0 ]; then
+  echo "usage: open-cursor-terminal [--hold] <script> [args...]" >&2
+  exit 2
+fi
+
+SCRIPT_PATH="$1"
+shift || true
+ARGS="${*:-}"
+
+if [ ! -f "$SCRIPT_PATH" ]; then
+  echo "open-cursor-terminal: script not found: $SCRIPT_PATH" >&2
+  exit 2
+fi
+
+RUNNER="$SCRIPT_PATH"
+if [ -n "$ARGS" ]; then
+  RUNNER="$SCRIPT_PATH $ARGS"
+fi
+if $HOLD; then
+  RUNNER="$RUNNER; echo; echo '終了するには何かキーを押してください…'; read -rn1"
+fi
+
+# Prefer the freedesktop alias, then common emulators. Ghostty (the default
+# x-terminal-emulator on this system) accepts `-e <command...>` like xterm.
+pick_terminal() {
+  if [ -n "${OPEN_CURSOR_TERMINAL:-}" ]; then
+    echo "$OPEN_CURSOR_TERMINAL"
+    return 0
+  fi
+  for candidate in x-terminal-emulator gnome-terminal konsole ghostty xterm; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+TERM_BIN="$(pick_terminal)" || {
+  echo "open-cursor-terminal: no terminal emulator found (tried x-terminal-emulator, gnome-terminal, konsole, ghostty, xterm)" >&2
+  exit 3
+}
+
+case "$(basename "$TERM_BIN")" in
+  gnome-terminal)
+    exec "$TERM_BIN" -- bash -lc "$RUNNER"
+    ;;
+  konsole)
+    exec "$TERM_BIN" -e bash -lc "$RUNNER"
+    ;;
+  *)
+    exec "$TERM_BIN" -e bash -lc "$RUNNER"
+    ;;
+esac

@@ -1,0 +1,59 @@
+#!/bin/bash
+# open-cursor-help — Open-Cursor command & endpoint reference
+cat <<'EOF'
+Open-Cursor — commands and endpoints
+====================================
+
+CLI commands (~/.local/bin):
+
+  open-cursor             Start bridge + mobile dashboard (prints status when running)
+  open-cursor-app         Launch the Open-Cursor desktop app (Cursor)
+  open-cursor-monitor     Live terminal monitor: LLM quota, execution state,
+                          workspace changes, lifetime stats  [q]uit [r]efresh [b]rowser
+  open-cursor-status      One-shot bridge status (use --json for machine output)
+  usage                   LLM quota / rate-limit / model IDs (Codex·Gemini·MiMo)
+  stop-bridge             Stop bridge + mobile dashboard
+  open-cursor-update      Update: git pull -> checks/tests -> restart -> re-register
+  agy-open-cursor         Antigravity CLI adapter (used by the bridge)
+  open-cursor-terminal    Open a terminal window running a script (used by desktop actions)
+  open-cursor-help        This help
+
+Desktop (GNOME menu / デスクトップの Open-Cursor アイコンを右クリック):
+
+  Open-Cursor             Launch the app
+  New Window              新しいウィンドウ
+  Live Monitor            ライブモニターを開く (open-cursor-monitor)
+  Agent Status            ステータス表示 (open-cursor-status)
+  LLM Usage               クォータ確認 (usage)
+  Command List            この一覧 (open-cursor-help)
+  Stop Bridge Server      ブリッジ停止
+
+Cursor extension commands (Command Palette / Ctrl+Shift+P):
+
+  Open-Cursor: Chat with Agents           チャットパネル (Ctrl+Shift+A)
+  Open-Cursor: Start Bridge Server        ブリッジ起動
+  Open-Cursor: Stop Managed Bridge Server ブリッジ停止
+  Open-Cursor: Show Agent Status          ステータス表示
+  Open-Cursor: Select Agent Routing Mode  ルーティングモード選択
+
+Routing modes (chat panel selector / model namespace):
+
+  auto           自動判別 (side-effect-aware)
+  goal           Goal Loop — 目標達成まで同一スレッドで自動継続 (codex)
+  collaborative  Gemini Plan -> Codex Implement -> Review -> Refine
+  pipeline       Gemini Plan -> Codex Implement
+  autonomous     承認なし全自動 (Gemini)
+  codex / antigravity / mimo / mimo-gemini
+
+HTTP API (127.0.0.1:9876, loopback only):
+
+  GET  /health                 健全性 + リクエスト合計
+  GET  /v1/models              利用可能モデル一覧
+  GET  /v1/agents              エージェント認証状態
+  GET  /v1/stats               稼働統計 (uptime, modes, agents, recent)
+  GET  /monitor                LLM/ワークスペース/実行状態の統合スナップショット
+  GET  /v1/execution-receipts/<id>  ワークスペース実行レシート
+  POST /v1/chat/completions    OpenAI互換チャット (SSE対応)
+
+More: https://github.com/SMB-Chan/open-cursor  (README.md)
+EOF

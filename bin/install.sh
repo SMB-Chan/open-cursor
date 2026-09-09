@@ -279,12 +279,32 @@ Keywords=code;editor;ai;multi-agent;cursor;codex;gemini;
 StartupNotify=true
 StartupWMClass=Cursor
 MimeType=text/plain;inode/directory;application/x-cursor-workspace;
-Actions=new-window;stop-bridge;
+Actions=new-window;monitor;status;usage;help;stop-bridge;
 
 [Desktop Action new-window]
 Name=New Window
 Name[ja]=新しいウィンドウ
 Exec=$BRIDGE_DIR/bin/open-cursor-app --new-window %F
+
+[Desktop Action monitor]
+Name=Live Monitor
+Name[ja]=ライブモニター
+Exec=$BRIDGE_DIR/bin/open-cursor-terminal --hold $BRIDGE_DIR/bin/open-cursor-monitor
+
+[Desktop Action status]
+Name=Agent Status
+Name[ja]=エージェント状態
+Exec=$BRIDGE_DIR/bin/open-cursor-terminal --hold $BRIDGE_DIR/bin/open-cursor-status
+
+[Desktop Action usage]
+Name=LLM Usage
+Name[ja]=LLMクォータ確認
+Exec=$BRIDGE_DIR/bin/open-cursor-terminal --hold $BRIDGE_DIR/bin/usage
+
+[Desktop Action help]
+Name=Command List
+Name[ja]=コマンド一覧
+Exec=$BRIDGE_DIR/bin/open-cursor-terminal --hold $BRIDGE_DIR/bin/open-cursor-help
 
 [Desktop Action stop-bridge]
 Name=Stop Bridge Server
@@ -314,6 +334,10 @@ echo -e "  ${GREEN}✓${NC} Desktop entry created: $DESKTOP_FILE"
 
 chmod +x "$BRIDGE_DIR/bin/open-cursor"
 chmod +x "$BRIDGE_DIR/bin/open-cursor-app"
+chmod +x "$BRIDGE_DIR/bin/open-cursor-monitor"
+chmod +x "$BRIDGE_DIR/bin/open-cursor-status"
+chmod +x "$BRIDGE_DIR/bin/open-cursor-help"
+chmod +x "$BRIDGE_DIR/bin/open-cursor-terminal"
 chmod +x "$BRIDGE_DIR/bin/stop-bridge"
 chmod +x "$BRIDGE_DIR/bin/agy-open-cursor"
 chmod +x "$BRIDGE_DIR/server/index.js" 2>/dev/null || true
@@ -321,7 +345,12 @@ chmod +x "$BRIDGE_DIR/server/index.js" 2>/dev/null || true
 mkdir -p "$HOME/.local/bin"
 ln -sf "$BRIDGE_DIR/bin/open-cursor" "$HOME/.local/bin/open-cursor"
 ln -sf "$BRIDGE_DIR/bin/open-cursor-app" "$HOME/.local/bin/open-cursor-app"
+ln -sf "$BRIDGE_DIR/bin/open-cursor-monitor" "$HOME/.local/bin/open-cursor-monitor"
+ln -sf "$BRIDGE_DIR/bin/open-cursor-status" "$HOME/.local/bin/open-cursor-status"
+ln -sf "$BRIDGE_DIR/bin/open-cursor-help" "$HOME/.local/bin/open-cursor-help"
+ln -sf "$BRIDGE_DIR/bin/open-cursor-terminal" "$HOME/.local/bin/open-cursor-terminal"
 ln -sf "$BRIDGE_DIR/bin/stop-bridge" "$HOME/.local/bin/stop-bridge"
+ln -sf "$BRIDGE_DIR/bin/usage" "$HOME/.local/bin/usage"
 ln -sf "$BRIDGE_DIR/bin/agy-open-cursor" "$HOME/.local/bin/agy-open-cursor"
 
 # ── Summary ──────────────────────────────────────────────

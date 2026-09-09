@@ -1,0 +1,61 @@
+#!/bin/bash
+# open-cursor-status — one-shot bridge status (human-readable or --json)
+BRIDGE_PORT="${BRIDGE_PORT:-9876}"
+BASE="http://127.0.0.1:$BRIDGE_PORT"
+
+fetch_or_empty() {
+  curl -sf --connect-timeout 2 "$BASE$1" || echo ""
+}
+
+HEALTH="$(fetch_or_empty /health)"
+if [ -z "$HEALTH" ]; then
+  if [ "${1:-}" = "--json" ]; then
+    echo '{"status":"offline"}'
+  else
+    echo "Open-Cursor bridge: OFFLINE (not listening on 127.0.0.1:$BRIDGE_PORT)"
+    echo "Start it with: open-cursor"
+  fi
+  exit 1
+fi
+
+AGENTS="$(fetch_or_empty /v1/agents)"
+STATS="$(fetch_or_empty /v1/stats)"
+
+printf '%s\n%s\n%s\n' "$HEALTH" "$AGENTS" "$STATS" | node -e '
+  const { readFileSync } = require("node:fs");
+  const [health, agents, stats] = readFileSync(0, "utf8").split("\n").filter(Boolean).map(JSON.parse);
+  const jsonMode = process.argv[1] === "--json";
+
+  if (jsonMode) {
+    console.log(JSON.stringify({ bridge: health, agents: agents.agents || {}, stats }, null, 2));
+    process.exit(0);
+  }
+
+  const r = stats.requests || {};
+  const uptime = stats.uptime_seconds || 0;
+  const uptimeLabel =
+    uptime >= 3600 ? `${Math.floor(uptime / 3600)}h${String(Math.floor((uptime % 3600) / 60)).padStart(2, "0")}m`
+    : uptime >= 60 ? `${Math.floor(uptime / 60)}m${String(uptime % 60).padStart(2, "0")}s`
+    : `${uptime}s`;
+  const pad = (label, width) => String(label).padEnd(width);
+
+  console.log(`Open-Cursor Bridge v${health.version} — ${String(health.status).toUpperCase()} (up ${uptimeLabel})`);
+  console.log(`Endpoint: http://127.0.0.1:${process.env.BRIDGE_PORT || 9876}/v1  ·  billing: ${health.billing}`);
+  console.log("");
+  console.log("Agents:");
+  for (const agent of Object.values(agents.agents || {})) {
+    const state = agent.available ? "READY" : agent.authenticated ? "AUTH ONLY" : agent.enabled ? "NOT AUTH" : "disabled";
+    console.log(`  ${pad(agent.name, 30)} ${state}`);
+  }
+  console.log("");
+  console.log(`Requests: ${r.total ?? 0} total · ${r.completed ?? 0} completed · ${r.failed ?? 0} failed · ${r.cancelled ?? 0} cancelled · ${r.active ?? 0} active`);
+  const modes = Object.entries(stats.modes || {});
+  if (modes.length > 0) console.log(`Modes: ${modes.map(([m, n]) => `${m}:${n}`).join(" · ")}`);
+  const agentsUsed = Object.entries(stats.agents || {});
+  if (agentsUsed.length > 0) console.log(`Agent usage: ${agentsUsed.map(([a, n]) => `${a}:${n}`).join(" · ")}`);
+  const last = stats.last_request;
+  if (last) {
+    console.log("");
+    console.log(`Last request: ${last.status} · mode=${last.mode} · agent=${last.agent ?? "-"} · ${last.duration_ms}ms (${last.at})`);
+  }
+' -- "${1:-}"

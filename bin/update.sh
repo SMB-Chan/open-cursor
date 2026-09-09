@@ -133,6 +133,10 @@ else
   echo -e "  ${CYAN}ℹ${NC} extensions.json not present; symlink discovery remains installed"
 fi
 
+# Desktop entry / ~/.local/bin symlinks may gain new actions between versions;
+# the installer is idempotent, so re-run it quietly to refresh those.
+bash "$REPO_DIR/bin/install.sh" >/dev/null 2>&1 || true
+
 # ── Summary ──────────────────────────────────────────────
 
 echo ""
