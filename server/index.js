@@ -55,6 +55,7 @@ const ROUTING_MODES = new Set([
   "mimo-gemini",
   "auto",
   "autonomous",
+  "goal",
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const REQUEST_ID_PATTERN = /^chatcmpl-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -89,6 +90,7 @@ function parseAgentSelection(modelName, headerMode) {
     let namespaceMode = null;
 
     if (namespace === "codex") namespaceMode = "codex";
+    if (namespace === "goal" || namespace === "loop") namespaceMode = "goal";
     if (namespace === "antigravity" || namespace === "gemini") namespaceMode = "antigravity";
     if (namespace === "mimo") namespaceMode = "mimo";
     if (namespace === "mimo-gemini" || namespace === "gemini-mimo") namespaceMode = "mimo-gemini";
@@ -108,6 +110,7 @@ function parseAgentSelection(modelName, headerMode) {
     if (ROUTING_MODES.has(lower)) mode = lower;
     else if (lower === "gemini") mode = "antigravity";
     else if (lower === "mimo-gemini" || lower === "gemini-mimo") mode = "mimo-gemini";
+    else if (lower === "codex-goal" || lower === "codex-loop") mode = "goal";
   } else if (
     (mode === "codex" || mode === "antigravity" || mode === "mimo" || mode === "mimo-gemini") &&
     requestedModel
@@ -121,6 +124,7 @@ function parseAgentSelection(modelName, headerMode) {
 
 function requiredAgentsForMode(mode) {
   if (mode === "codex") return ["codex"];
+  if (mode === "goal") return ["codex"];
   if (mode === "antigravity") return ["antigravity"];
   if (mode === "autonomous") return ["antigravity"];
   if (mode === "mimo") return ["mimo"];
@@ -593,6 +597,18 @@ async function handleModels(req, res) {
         object: "model",
         owned_by: "openai",
         description: `OpenAI ChatGPT (${codexModel}) via Codex CLI`,
+      },
+      {
+        id: "goal",
+        object: "model",
+        owned_by: "bridge",
+        description: "Codex Goal Loop (goal-driven multi-round execution on one thread; GOAL_COMPLETE/GOAL_BLOCKED markers)",
+      },
+      {
+        id: "codex-loop",
+        object: "model",
+        owned_by: "bridge",
+        description: "Alias of goal",
       },
       {
         id: `codex/${codexModel}`,

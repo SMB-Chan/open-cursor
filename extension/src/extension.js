@@ -479,6 +479,11 @@ function activate(context) {
         [
           { label: "Auto", description: "Side-effect-aware automatic routing", value: "auto" },
           {
+            label: "Goal Loop",
+            description: "Codex goal-driven multi-round execution on one thread",
+            value: "goal",
+          },
+          {
             label: "Autonomous",
             description: "Gemini auto-approved file edits and commands",
             value: "autonomous",
@@ -577,6 +582,7 @@ function getChatHTML(webview) {
   <div id="input-area">
     <select id="mode" aria-label="Agent routing mode">
       <option value="auto">Auto (自動判別)</option>
+      <option value="goal">Goal Loop (目標達成まで自動継続)</option>
       <option value="autonomous">Autonomous (承認なし全自動)</option>
       <option value="mimo-gemini">MiMo + Gemini</option>
       <option value="collaborative">Collaborative (Codex + Gemini)</option>
@@ -604,7 +610,8 @@ function getChatHTML(webview) {
       implement: 'Implement',
       review: 'Review',
       refine: 'Refine',
-      respond: 'Respond'
+      respond: 'Respond',
+      goal: 'Goal Loop'
     };
 
     let activeRequestId = null;
@@ -628,6 +635,7 @@ function getChatHTML(webview) {
     function phaseKey(rawPhase) {
       const phase = String(rawPhase || '').replace(/-header$/, '');
       if (phase === 'planning' || phase === 'analysis') return 'plan';
+      if (phase === 'goal') return 'goal';
       if (phase === 'implementation') return 'implement';
       if (phase === 'review') return 'review';
       if (phase === 'refinement') return 'refine';
@@ -646,6 +654,7 @@ function getChatHTML(webview) {
     function phaseSequence(selectedMode) {
       if (selectedMode === 'collaborative') return ['plan', 'implement', 'review', 'refine'];
       if (selectedMode === 'pipeline') return ['plan', 'implement'];
+      if (selectedMode === 'goal') return ['goal'];
       return ['respond'];
     }
 

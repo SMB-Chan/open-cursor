@@ -13,8 +13,17 @@ import {
 } from "./context.js";
 import { compressHandoff, safePromptArg } from "./compressor.js";
 import { updateExecutionState } from "./monitor.js";
+import {
+  buildGoalContract,
+  buildGoalRoundPrompt,
+  goalLoopConfig,
+  parseGoalRoundStatus,
+  readGoalStatus,
+  sessionIdFromRun,
+  stripGoalMarker,
+} from "./codex-sessions.js";
 
-const VERSION = "2.6.0";
+const VERSION = "2.7.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");
@@ -266,6 +275,32 @@ function runProcess({
   });
 }
 
+function runCodexSession({ threadId, forkFrom, prompt, cwd, model, signal, onChunk } = {}) {
+  const args = ["exec"];
+  if (threadId || forkFrom) {
+    args.push(threadId ? "resume" : "fork");
+    args.push(threadId || forkFrom);
+  }
+  if (model && !threadId && !forkFrom) args.push("-m", model);
+  if (!threadId && !forkFrom) {
+    // Working-directory and approval options are only valid on a fresh exec
+    // start; resume/fork inherit the thread's original context.
+    args.push("-C", cwd || process.cwd());
+  }
+  args.push("--skip-git-repo-check", "--color", "never", "-");
+
+  return runProcess({
+    agent: "codex",
+    command: CODEX_BIN,
+    args,
+    cwd,
+    signal,
+    stdinText: prompt,
+    onStdout: onChunk,
+    env: { ...process.env, CODEX_HOME, OPENAI_API_KEY: "" },
+  });
+}
+
 function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
   const args = ["exec"];
   if (model) args.push("-m", model);
@@ -289,6 +324,112 @@ function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
     onStdout: onChunk,
     env: { ...process.env, CODEX_HOME, OPENAI_API_KEY: "" },
   });
+}
+
+// Goal mode: objective-driven multi-round Codex run. Round 1 starts a fresh
+// `codex exec` thread with the goal contract; every later round resumes the
+// SAME thread via `codex exec resume <id>` so the agent keeps its own memory.
+// The model itself declares GOAL_COMPLETE / GOAL_BLOCKED with a standalone
+// status line, which the bridge parses — this mirrors the Codex goals
+// subsystem (active/complete/blocked statuses) without depending on
+// version-specific CLI subcommands.
+async function runGoalLoop(prompt, { cwd, model, signal, onEvent } = {}) {
+  const { maxRounds } = goalLoopConfig();
+  const rounds = [];
+  let threadId = null;
+  let lastStatus = "continue";
+  let lastContent = "";
+  let lastCode = null;
+
+  for (let round = 1; round <= maxRounds; round++) {
+    const modelId = model || "gpt-6-astra";
+    updateExecutionState({
+      active: true,
+      mode: "goal",
+      selectedMode: "goal",
+      phase: "goal",
+      agent: "codex",
+      modelId,
+      modelDisplayName: "GPT-6-Astra (goal loop)",
+      activeModels: [modelId],
+      progress: Math.min(95, 8 + Math.round(((round - 1) / maxRounds) * 87)),
+      currentAction: `目標ラウンド ${round}/${maxRounds} [${modelId}]${threadId ? " · 継続" : " · 新規"}`,
+    });
+
+    emitHeader(
+      onEvent,
+      `\n\n> 🔁 **【目標ラウンド ${round}/${maxRounds}】** ${threadId ? "既存スレッドを継続" : "新しいスレッドを開始"}\n`,
+      "codex",
+      "goal"
+    );
+
+    const roundPrompt =
+      round === 1
+        ? buildGoalContract(prompt, { maxRounds, round, threadId })
+        : buildGoalRoundPrompt({ round, maxRounds, lastStatus });
+
+    const run = await runCodexSession({
+      threadId: round === 1 ? null : threadId,
+      prompt: roundPrompt,
+      cwd,
+      model: round === 1 ? model : undefined,
+      signal,
+      onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "goal" }),
+    });
+
+    // A failed round ends the loop; no silent retries and no re-routing.
+    const checked = requireSuccessfulAgent(run);
+    lastCode = checked.code;
+    lastContent = checked.content;
+    rounds.push({ round, content: checked.content });
+
+    if (round === 1) {
+      threadId = sessionIdFromRun(run);
+      if (!threadId) {
+        throw new HttpError(
+          502,
+          "goal loop: codex exec did not report a session id on stderr; cannot continue the thread"
+        );
+      }
+    }
+
+    const parsed = parseGoalRoundStatus(checked.content);
+    lastStatus = parsed.status;
+
+    if (parsed.status === "complete") {
+      const goalState = await readGoalStatus(threadId);
+      return {
+        content: [
+          `## Goal loop (${rounds.length} round${rounds.length === 1 ? "" : "s"}) — COMPLETE`,
+          ...rounds.map((r) => `### Round ${r.round}\n${stripGoalMarker(r.content)}`),
+          ...(goalState ? [`\nCodex goals status: ${goalState}`] : []),
+        ].join("\n\n"),
+        agent: "goal",
+        code: lastCode,
+      };
+    }
+
+    if (parsed.status === "blocked") {
+      return {
+        content: [
+          `## Goal loop (${rounds.length} round${rounds.length === 1 ? "" : "s"}) — BLOCKED`,
+          ...rounds.map((r) => `### Round ${r.round}\n${stripGoalMarker(r.content)}`),
+        ].join("\n\n"),
+        agent: "goal",
+        code: lastCode,
+      };
+    }
+  }
+
+  return {
+    content: [
+      `## Goal loop — ROUND BUDGET EXHAUSTED (${maxRounds} rounds, last status: ${lastStatus})`,
+      `Thread ${threadId} can be continued with: codex exec resume ${threadId}`,
+      ...rounds.map((r) => `### Round ${r.round}\n${stripGoalMarker(r.content)}`),
+    ].join("\n\n"),
+    agent: "goal",
+    code: lastCode,
+  };
 }
 
 function mapAntigravityModel(model) {
@@ -571,6 +712,12 @@ export function getResolvedModelsForMode(targetMode, targetModel) {
         secondaryModelId: targetModel || "gpt-6-astra",
         description: "Gemini 3.1 Pro (計画/検証) ➔ gpt-6-astra (実装/修正)",
       };
+    case "goal":
+      return {
+        activeModels: [targetModel || "gpt-6-astra"],
+        primaryModelId: targetModel || "gpt-6-astra",
+        description: "Codex Goal Loop (目標駆動ラウンド継続)",
+      };
     case "codex":
       return {
         activeModels: [targetModel || "gpt-6-astra"],
@@ -707,6 +854,31 @@ async function orchestrateMode(prompt, { cwd, mode, model, signal, onEvent } = {
   }
 
   switch (selectedMode) {
+    case "goal": {
+      const modelId = model || "gpt-6-astra";
+      updateExecutionState({
+        active: true,
+        mode: "goal",
+        selectedMode: "goal",
+        phase: "goal",
+        agent: "codex",
+        modelId,
+        modelDisplayName: "GPT-6-Astra (goal loop)",
+        activeModels: [modelId],
+        progress: 8,
+        currentAction: `目標ラウンド 1 [${modelId}]`,
+      });
+      emitHeader(
+        onEvent,
+        `> 🎯 **Goal Loop Mode** | モデルID: \`${modelId}\`\n` +
+        `> ─── 目標達成まで同一スレッドでラウンドを繰り返します (最大 ${goalLoopConfig().maxRounds} ラウンド) ───\n\n`,
+        "codex",
+        "goal"
+      );
+      const result = await runGoalLoop(prompt, { cwd, model, signal, onEvent });
+      return result;
+    }
+
     case "codex": {
       const modelId = model || "gpt-6-astra";
       updateExecutionState({
@@ -1216,6 +1388,11 @@ async function orchestrateMode(prompt, { cwd, mode, model, signal, onEvent } = {
 
 function analyzeTask(prompt) {
   const p = prompt.toLowerCase();
+  // Explicit goal-mode intent wins before every other classifier: users who
+  // ask for a goal/loop run are opting into multi-round autonomous execution.
+  const hasGoalIntent =
+    /\b(goal[\s-]?loop|loop until|keep going until|iterate until|until (the )?(task|goal|it) (is |is )?(done|complete|passing))\b/.test(p) ||
+    /(目標ループ|目標達成まで|完了まで繰り返|ループで回し)/.test(prompt);
   const hasAnalysis =
     /\b(analyze|research|explain|review|audit|compare|survey|study|evaluate|investigate|inspect|verify)\b/.test(p) ||
     /(分析|調査|説明|レビュー|監査|比較|検証|研究|評価|考察|確認)/.test(prompt);
@@ -1227,6 +1404,14 @@ function analyzeTask(prompt) {
     /\b(and then|after that|also|additionally|furthermore|continue|proceed|carry on)\b/.test(p) ||
     /(その後|さらに|加えて|続けて|続行|続けよ|進めて)/.test(prompt);
 
+  if (hasGoalIntent) {
+    return {
+      routing: "goal",
+      reason: "explicit goal/loop request",
+      kind: "goal",
+      requiresWorkspaceWrite: true,
+    };
+  }
   if (hasImplementation && (hasAnalysis || hasContinuation)) {
     return {
       routing: "collaborative",
@@ -1251,6 +1436,7 @@ function selectAutoMode(taskType, availability) {
   const { codex = false, antigravity = false, mimo = false } = availability || {};
 
   if (taskType.requiresWorkspaceWrite) {
+    if (taskType.routing === "goal" && codex) return "goal";
     if (taskType.routing === "collaborative" && codex && antigravity) return "collaborative";
     if (codex) return "codex";
     throw new HttpError(503, "Auto routing requires a workspace-writing Codex agent for this task");

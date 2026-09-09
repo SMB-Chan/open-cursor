@@ -143,6 +143,14 @@ test("continuation requests choose the collaborative quality loop", () => {
   assert.equal(analyzeTask("continue and then verify the result").routing, "collaborative");
 });
 
+test("goal intent in prompts routes to goal mode", () => {
+  assert.equal(analyzeTask("goal loop: make all tests pass").routing, "goal");
+  assert.equal(analyzeTask("完了まで繰り返して修正せよ").routing, "goal");
+  assert.equal(analyzeTask("iterate until the task is done").routing, "goal");
+  assert.equal(analyzeTask("run the goal-loop on this repo").routing, "goal");
+  assert.notEqual(analyzeTask("fix the parser").routing, "goal");
+});
+
 test("getResolvedModelsForMode exposes concrete model IDs for collaborative and auto modes", () => {
   const collab = getResolvedModelsForMode("collaborative");
   assert.deepEqual(collab.activeModels, ["gemini-3.1-pro-high", "gpt-6-astra"]);
@@ -157,6 +165,10 @@ test("getResolvedModelsForMode exposes concrete model IDs for collaborative and 
 
   const autoAutonomous = getResolvedModelsForMode("autonomous");
   assert.deepEqual(autoAutonomous.activeModels, ["gemini-3.1-pro-high"]);
+
+  const goal = getResolvedModelsForMode("goal");
+  assert.deepEqual(goal.activeModels, ["gpt-6-astra"]);
+  assert.match(goal.description, /Goal Loop/);
 });
 
 test("orchestrate always resets execution state to idle, even when agents fail", async () => {

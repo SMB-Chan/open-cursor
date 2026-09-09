@@ -13,6 +13,7 @@ import {
   parseAgentSelection,
   parseBody,
   rejectBrowserOrigin,
+  requiredAgentsForMode,
   resolveRequestId,
   runProcess,
 } from "./index.js";
@@ -67,6 +68,29 @@ test("request body limits count UTF-8 bytes and ignore data after rejection", as
   req.emit("data", Buffer.from("{}"));
   req.emit("end");
   await assert.rejects(result, (error) => error instanceof HttpError && error.statusCode === 413);
+});
+
+test("goal mode is routable through model names, namespaces and headers", () => {
+  assert.deepEqual(parseAgentSelection("goal", undefined), { mode: "goal", model: undefined });
+  assert.deepEqual(parseAgentSelection(undefined, "goal"), { mode: "goal", model: undefined });
+  assert.deepEqual(parseAgentSelection("codex-goal", undefined), { mode: "goal", model: undefined });
+  assert.deepEqual(parseAgentSelection("codex-loop", undefined), { mode: "goal", model: undefined });
+  assert.deepEqual(parseAgentSelection("goal/gpt-6-astra", undefined), {
+    mode: "goal",
+    model: "gpt-6-astra",
+  });
+});
+
+test("goal mode requires codex availability", () => {
+  assert.deepEqual(requiredAgentsForMode("goal"), ["codex"]);
+});
+
+test("goal header with codex namespace model does not conflict on routing", () => {
+  // goal runs on codex, so a codex/ model suffix is the expected pairing.
+  assert.deepEqual(parseAgentSelection("goal/gpt-6-astra", "goal"), {
+    mode: "goal",
+    model: "gpt-6-astra",
+  });
 });
 
 test("routing aliases are not forwarded as CLI model names", () => {

@@ -191,8 +191,15 @@ Legacy shell-managed bridge stop:
 | `codex` | Codex only | Write-capable |
 | `antigravity` | Explicit Antigravity route | Write-capable by explicit selection |
 | `autonomous` | Explicit Antigravity auto-approved edits/commands | **Write-capable; high trust required** |
+| `goal` | Codex Goal Loop: one thread, rounds until `GOAL_COMPLETE`/`GOAL_BLOCKED` or budget | Write-capable through Codex |
 | `mimo` | Xiaomi MiMo response/solution draft | Read-only; no workspace access |
 | `mimo-gemini` | Gemini plan/review + MiMo solution draft | Read-only; no workspace implementation |
+
+### Goal Loop (goal / codex-loop)
+
+Goal mode drives the Codex **goals subsystem** from the bridge: round 1 starts a `codex exec` thread with the goal contract (work autonomously, no commits unless asked, end every response with a standalone `GOAL_COMPLETE` or `GOAL_BLOCKED` status line). Every later round resumes the SAME thread with `codex exec resume <session-id>` so the agent keeps its own memory, and the loop continues until the model declares completion, reports a blocker, or the round budget is exhausted. The thread id is parsed from the codex stderr header, the final payload lists every round, and exhausted runs print the exact `codex exec resume <id>` command to continue later.
+
+Environment knobs: `BRIDGE_GOAL_MAX_ROUNDS` (default 8, max 32) and `BRIDGE_GOAL_ROUND_TIMEOUT_MS` (default 10 minutes per round). Auto routing selects goal mode only on explicit goal/loop intent ("goal loop", "iterate until done", 「目標達成まで」「完了まで繰り返」); otherwise it stays on codex/collaborative.
 
 Automatic routing recognizes common English and Japanese analysis, implementation, verification, and continuation terms. Explicit routing takes precedence. Auto treats side effects as a hard capability constraint: an implementation request is never reported as completed through MiMo, and a failed/partially completed writer run is never silently retried as a response-only success.
 
@@ -269,6 +276,8 @@ BRIDGE_CONTEXT_MAX_FILES
 BRIDGE_CONTEXT_MAX_BYTES
 BRIDGE_CONTEXT_FILE_BYTES
 BRIDGE_DIFF_MAX_BYTES
+BRIDGE_GOAL_MAX_ROUNDS
+BRIDGE_GOAL_ROUND_TIMEOUT_MS
 CODEX_BIN
 AGY_BIN
 CODEX_ENABLED

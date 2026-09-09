@@ -216,7 +216,7 @@ function shouldJournalWorkspace(requestedMode, taskInfo = {}) {
   const mode = requestedMode || "auto";
   if (mode === "auto") return taskInfo.requiresWorkspaceWrite === true;
   if (mode === "mimo" || mode === "mimo-gemini") return false;
-  return new Set(["codex", "antigravity", "pipeline", "collaborative", "autonomous"]).has(mode);
+  return new Set(["codex", "antigravity", "pipeline", "collaborative", "autonomous", "goal", "loop"]).has(mode);
 }
 
 async function startWorkspaceReceipt(cwd, { id, mode } = {}) {

@@ -1,14 +1,14 @@
 {
   "name": "open-cursor-bridge",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "type": "module",
   "description": "Multi-agent coding bridge with subscription-backed local agents and optional external remote providers.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "check": "node --check config.js && node --check index.js && node --check engine.js && node --check context.js && node --check compressor.js && node --check receipt.js && node --check monitor.js && node --check stats.js && node --check config.test.js && node --check index.test.js && node --check context.test.js && node --check engine.test.js && node --check routing-safety.test.js && node --check compressor.test.js && node --check receipt.test.js && node --check monitor.test.js && node --check stats.test.js",
-    "test": "node --test config.test.js index.test.js context.test.js engine.test.js routing-safety.test.js compressor.test.js receipt.test.js monitor.test.js stats.test.js"
+    "check": "node --check config.js && node --check index.js && node --check engine.js && node --check context.js && node --check compressor.js && node --check receipt.js && node --check monitor.js && node --check stats.js && node --check codex-sessions.js && node --check config.test.js && node --check index.test.js && node --check context.test.js && node --check engine.test.js && node --check routing-safety.test.js && node --check compressor.test.js && node --check receipt.test.js && node --check monitor.test.js && node --check stats.test.js && node --check codex-sessions.test.js",
+    "test": "node --test config.test.js index.test.js context.test.js engine.test.js routing-safety.test.js compressor.test.js receipt.test.js monitor.test.js stats.test.js codex-sessions.test.js"
   },
   "engines": {
     "node": ">=18"
