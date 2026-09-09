@@ -2,7 +2,7 @@
   "name": "open-cursor-bridge",
   "displayName": "Open-Cursor Multi-Agent Bridge",
   "description": "課金なしのマルチLLM協調コーディング — Codex + Antigravity",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "publisher": "open-cursor",
   "engines": {
     "vscode": "^1.80.0"

@@ -1,8 +1,8 @@
 {
   "name": "open-cursor-bridge",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "type": "module",
-  "description": "Multi-agent coding bridge: Codex (ChatGPT) + Antigravity (Gemini). Zero billing APIs.",
+  "description": "Multi-agent coding bridge: Codex (ChatGPT) + Antigravity (Gemini). Subscription-authenticated local execution.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
