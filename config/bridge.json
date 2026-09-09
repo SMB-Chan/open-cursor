@@ -34,7 +34,7 @@
     },
     "antigravity": {
       "enabled": true,
-      "binary": "agy",
+      "binary": "~/.cursor-codex-bridge/bin/agy-open-cursor",
       "authMode": "google-oauth",
       "billing": "NONE",
       "useG1Credits": false,

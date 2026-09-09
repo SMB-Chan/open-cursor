@@ -1,0 +1,386 @@
+#!/usr/bin/env node
+"use strict";
+
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const DISCOVERY_TIMEOUT_MS = 5000;
+const CACHE_FILE = path.join(
+  os.tmpdir(),
+  `open-cursor-agy-models-${typeof process.getuid === "function" ? process.getuid() : "user"}.json`
+);
+
+function parseModelList(output) {
+  const models = [];
+  const seen = new Set();
+  for (const rawLine of String(output || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const match = line.match(/^(\S+)\s+(.+)$/);
+    if (!match) continue;
+    const slug = match[1].trim();
+    const name = match[2].trim();
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(slug)) continue;
+    if (!name || /^(model|slug|name)$/i.test(slug)) continue;
+    const key = slug.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    models.push({ slug, name });
+  }
+  return models;
+}
+
+function modelVersion(slug) {
+  const match = String(slug || "").match(/^gemini-(\d+)(?:\.(\d+))?/i);
+  return match ? [Number(match[1]), Number(match[2] || 0)] : [-1, -1];
+}
+
+function modelEffort(slug) {
+  const lower = String(slug || "").toLowerCase();
+  if (lower.endsWith("-high")) return "high";
+  if (lower.endsWith("-medium")) return "medium";
+  if (lower.endsWith("-low")) return "low";
+  return "unknown";
+}
+
+function chooseVariant(models, family, effortPreference) {
+  const marker = `-${family}-`;
+  return models
+    .filter((model) => {
+      const slug = String(model.slug || "").toLowerCase();
+      return slug.startsWith("gemini-") && slug.includes(marker);
+    })
+    .slice()
+    .sort((a, b) => {
+      const [aMajor, aMinor] = modelVersion(a.slug);
+      const [bMajor, bMinor] = modelVersion(b.slug);
+      if (aMajor !== bMajor) return bMajor - aMajor;
+      if (aMinor !== bMinor) return bMinor - aMinor;
+      const aRank = effortPreference.indexOf(modelEffort(a.slug));
+      const bRank = effortPreference.indexOf(modelEffort(b.slug));
+      const normalizedA = aRank === -1 ? effortPreference.length : aRank;
+      const normalizedB = bRank === -1 ? effortPreference.length : bRank;
+      if (normalizedA !== normalizedB) return normalizedA - normalizedB;
+      return a.slug.localeCompare(b.slug);
+    })[0]?.slug;
+}
+
+function classifyLegacyModel(value) {
+  const lower = String(value || "").trim().toLowerCase();
+  if (!lower) return null;
+  if (lower === "pro" || /gemini.*pro.*\(high\)/i.test(value)) {
+    return { family: "pro", effort: ["high", "medium", "low"] };
+  }
+  if (lower === "flash" || /gemini.*flash.*\(high\)/i.test(value)) {
+    return { family: "flash", effort: ["high", "medium", "low"] };
+  }
+  if (
+    lower === "flash_lite" ||
+    lower === "flash-lite" ||
+    /gemini.*flash.*\((?:low|medium)\)/i.test(value)
+  ) {
+    return { family: "flash", effort: ["low", "medium", "high"] };
+  }
+  return null;
+}
+
+function resolveModel(value, models) {
+  const requested = String(value || "").trim();
+  if (!requested) return requested;
+  const lower = requested.toLowerCase();
+  const exactSlug = models.find((model) => model.slug.toLowerCase() === lower);
+  if (exactSlug) return exactSlug.slug;
+  const exactName = models.find((model) => model.name.toLowerCase() === lower);
+  if (exactName) return exactName.slug;
+
+  const legacy = classifyLegacyModel(requested);
+  if (legacy) {
+    const discovered = chooseVariant(models, legacy.family, legacy.effort);
+    if (discovered) return discovered;
+    if (legacy.family === "pro") return "gemini-3.1-pro-high";
+    return legacy.effort[0] === "high" ? "gemini-3.8-flash-high" : "gemini-3.8-flash-medium";
+  }
+  return requested;
+}
+
+function readCache(now = Date.now()) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+    if (!Array.isArray(parsed.models)) return null;
+    return {
+      models: parsed.models.filter(
+        (model) => model && typeof model.slug === "string" && typeof model.name === "string"
+      ),
+      expiresAt: Number(parsed.expiresAt) || 0,
+      fresh: Number(parsed.expiresAt) > now,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(models, now = Date.now()) {
+  try {
+    const temp = `${CACHE_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(
+      temp,
+      JSON.stringify({ expiresAt: now + CACHE_TTL_MS, models }),
+      { encoding: "utf8", mode: 0o600 }
+    );
+    fs.renameSync(temp, CACHE_FILE);
+  } catch {}
+}
+
+function discoverModels(realAgy, env = process.env, now = Date.now()) {
+  const cached = readCache(now);
+  if (cached?.fresh && cached.models.length) return cached.models;
+
+  const result = spawnSync(realAgy, ["models"], {
+    env,
+    encoding: "utf8",
+    timeout: DISCOVERY_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  if (!result.error && result.status === 0) {
+    const models = parseModelList(result.stdout);
+    if (models.length) {
+      writeCache(models, now);
+      return models;
+    }
+  }
+  return cached?.models || [];
+}
+
+function locateModelArgument(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--model" && index + 1 < args.length) {
+      return { index, valueIndex: index + 1, value: args[index + 1] };
+    }
+    if (arg.startsWith("--model=")) {
+      return { index, valueIndex: index, value: arg.slice("--model=".length), inline: true };
+    }
+  }
+  return null;
+}
+
+function rewriteArgs(args, models, outputFormat = "stream-json") {
+  const rewritten = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--output-format") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--output-format=")) continue;
+    rewritten.push(arg);
+  }
+
+  const modelArg = locateModelArgument(rewritten);
+  if (modelArg) {
+    const resolved = resolveModel(modelArg.value, models);
+    if (modelArg.inline) rewritten[modelArg.index] = `--model=${resolved}`;
+    else rewritten[modelArg.valueIndex] = resolved;
+  }
+
+  if (outputFormat) rewritten.push("--output-format", outputFormat);
+  return rewritten;
+}
+
+function createStreamParser(onText) {
+  let buffer = "";
+  let streamedText = "";
+  let resultResponse = "";
+  let resultStatus = null;
+  let resultError = null;
+  let resultSeen = false;
+  let malformed = 0;
+
+  const emit = (text) => {
+    if (typeof text !== "string" || !text) return;
+    streamedText += text;
+    onText(text);
+  };
+
+  const handle = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      malformed += 1;
+      return;
+    }
+    if (event?.event === "step_update") {
+      const update = event.step_update;
+      if (update?.step_type === "agent_response" && typeof update.text_delta === "string") {
+        emit(update.text_delta);
+      }
+      return;
+    }
+    if (event?.event === "result") {
+      resultSeen = true;
+      const result = event.result || {};
+      resultResponse = typeof result.response === "string" ? result.response : "";
+      resultStatus = typeof result.status === "string" ? result.status : null;
+      resultError = typeof result.error === "string" ? result.error : null;
+      if (resultResponse && !streamedText) emit(resultResponse);
+      else if (resultResponse.startsWith(streamedText) && resultResponse.length > streamedText.length) {
+        emit(resultResponse.slice(streamedText.length));
+      }
+    }
+  };
+
+  return {
+    feed(chunk) {
+      buffer += String(chunk || "");
+      while (true) {
+        const newline = buffer.indexOf("\n");
+        if (newline < 0) break;
+        handle(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+      }
+    },
+    finish() {
+      if (buffer.trim()) handle(buffer);
+      buffer = "";
+      return {
+        streamedText,
+        response: resultResponse || streamedText,
+        status: resultStatus,
+        error: resultError,
+        resultSeen,
+        malformed,
+      };
+    },
+  };
+}
+
+function structuredUnsupported(code, stderr, stdout) {
+  if (code === 0) return false;
+  const diagnostic = `${stderr || ""}\n${stdout || ""}`.toLowerCase();
+  return (
+    /(?:unknown|unrecognized|unsupported|invalid).{0,80}(?:output-format|stream-json)/s.test(diagnostic) ||
+    /(?:output-format|stream-json).{0,80}(?:unknown|unrecognized|unsupported|invalid)/s.test(diagnostic)
+  );
+}
+
+function runChild(realAgy, args, { env, structured }) {
+  return new Promise((resolve) => {
+    let child;
+    let rawStdout = "";
+    let stderr = "";
+    let summary = null;
+    const parser = structured
+      ? createStreamParser((text) => process.stdout.write(text))
+      : null;
+
+    child = spawn(realAgy, args, {
+      env,
+      stdio: ["inherit", "pipe", "pipe"],
+      windowsHide: true,
+    });
+
+    const forwardSignal = (signal) => {
+      try {
+        if (child.exitCode === null && !child.signalCode) child.kill(signal);
+      } catch {}
+    };
+    const onTerm = () => forwardSignal("SIGTERM");
+    const onInt = () => forwardSignal("SIGINT");
+    process.once("SIGTERM", onTerm);
+    process.once("SIGINT", onInt);
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (text) => {
+      rawStdout += text;
+      if (rawStdout.length > 2 * 1024 * 1024) rawStdout = rawStdout.slice(-2 * 1024 * 1024);
+      if (parser) parser.feed(text);
+      else process.stdout.write(text);
+    });
+    child.stderr.on("data", (text) => {
+      stderr += text;
+      if (stderr.length > 1024 * 1024) stderr = stderr.slice(-1024 * 1024);
+      if (!structured) process.stderr.write(text);
+    });
+    child.once("error", (error) => {
+      process.removeListener("SIGTERM", onTerm);
+      process.removeListener("SIGINT", onInt);
+      resolve({ code: 127, signal: null, stdout: rawStdout, stderr: `${stderr}${error.message}\n`, summary });
+    });
+    child.once("close", (code, signal) => {
+      process.removeListener("SIGTERM", onTerm);
+      process.removeListener("SIGINT", onInt);
+      if (parser) summary = parser.finish();
+      resolve({ code: code ?? 1, signal, stdout: rawStdout, stderr, summary });
+    });
+  });
+}
+
+async function main(argv = process.argv.slice(2), options = {}) {
+  const realAgy = options.realAgy || process.env.OPEN_CURSOR_AGY_REAL_BIN || "agy";
+  const env = options.env || process.env;
+  const requestedModel = locateModelArgument(argv)?.value;
+  const models = requestedModel ? discoverModels(realAgy, env) : [];
+  const structuredArgs = rewriteArgs(argv, models, "stream-json");
+  const structured = await runChild(realAgy, structuredArgs, { env, structured: true });
+
+  if (structured.code === 0) {
+    if (structured.summary?.resultSeen) {
+      if (!structured.summary.status || structured.summary.status === "SUCCESS") return 0;
+      process.stderr.write(
+        `${structured.summary.error || `Antigravity result status: ${structured.summary.status}`}\n`
+      );
+      return 1;
+    }
+
+    // A compatibility CLI may accept the option yet still emit text. Preserve it.
+    if (!structured.summary?.streamedText && structured.stdout) process.stdout.write(structured.stdout);
+    if (structured.stderr) process.stderr.write(structured.stderr);
+    return 0;
+  }
+
+  if (
+    !structured.summary?.streamedText &&
+    structuredUnsupported(structured.code, structured.stderr, structured.stdout)
+  ) {
+    const textArgs = rewriteArgs(argv, models, null);
+    const fallback = await runChild(realAgy, textArgs, { env, structured: false });
+    return fallback.code;
+  }
+
+  if (structured.stderr) process.stderr.write(structured.stderr);
+  return structured.code || 1;
+}
+
+module.exports = {
+  CACHE_FILE,
+  CACHE_TTL_MS,
+  chooseVariant,
+  classifyLegacyModel,
+  createStreamParser,
+  discoverModels,
+  locateModelArgument,
+  main,
+  parseModelList,
+  resolveModel,
+  rewriteArgs,
+  structuredUnsupported,
+};
+
+if (require.main === module) {
+  main().then(
+    (code) => {
+      process.exitCode = Number.isInteger(code) ? code : 1;
+    },
+    (error) => {
+      process.stderr.write(`[open-cursor-agy] ${error?.stack || error}\n`);
+      process.exitCode = 1;
+    }
+  );
+}
