@@ -13,13 +13,59 @@ import {
 } from "./context.js";
 import { compressHandoff, safePromptArg } from "./compressor.js";
 import { updateExecutionState } from "./monitor.js";
+import { buildSandboxLaunch, parseSandboxMode, probeSandboxFacility, resolveReviewerSandbox } from "./sandbox.js";
+import {
+  DEFAULT_REVIEW_CYCLES,
+  VERDICT_MARKER_APPROVED,
+  VERDICT_MARKER_CHANGES_REQUESTED,
+  REVIEW_VERDICT_APPROVED,
+  REVIEW_VERDICT_UNKNOWN,
+  clampReviewCycles,
+  nextReviewLoopAction,
+  parseReviewVerdict,
+} from "./verdict.js";
 
-const VERSION = "2.4.0";
+const VERSION = "2.7.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");
 const CODEX_HOME = join(homedir(), ".codex");
 const GEMINI_HOME = join(homedir(), ".gemini");
+
+// Detached-reviewer OS isolation (bubblewrap). Mode and wrapper binary are
+// read at call time so tests can exercise each mode in one process; probe
+// results are cached per mode+binary pair.
+let reviewerSandboxCache = null;
+function reviewerSandboxOptions() {
+  return {
+    mode: parseSandboxMode(process.env.BRIDGE_REVIEWER_SANDBOX ?? "off", "off"),
+    bwrapBin: process.env.BWRAP_BIN || "bwrap",
+    geminiHome: existsSync(GEMINI_HOME) ? GEMINI_HOME : null,
+  };
+}
+
+async function resolveReviewerSandboxCached() {
+  const options = reviewerSandboxOptions();
+  if (options.mode === "off") {
+    return { active: false, label: "off", bwrapBin: options.bwrapBin, geminiHome: null };
+  }
+  const cacheKey = `${options.mode}:${options.bwrapBin}:${options.geminiHome ?? ""}`;
+  if (!reviewerSandboxCache || reviewerSandboxCache.key !== cacheKey) {
+    reviewerSandboxCache = {
+      key: cacheKey,
+      value: await resolveReviewerSandbox({ ...options, probe: probeSandboxFacility }),
+    };
+  }
+  return reviewerSandboxCache.value;
+}
+
+async function describeReviewerIsolation() {
+  try {
+    return (await resolveReviewerSandboxCached()).label;
+  } catch (error) {
+    return `required-unavailable (${error.message})`;
+  }
+}
 const MAX_OUTPUT_BYTES = envInt("BRIDGE_MAX_OUTPUT_BYTES", 8 * 1024 * 1024, 1024);
 const AGENT_TIMEOUT_MS = envInt("BRIDGE_AGENT_TIMEOUT_MS", 10 * 60 * 1000, 1000);
 const KILL_GRACE_MS = envInt("BRIDGE_KILL_GRACE_MS", 1500, 100);
@@ -300,10 +346,10 @@ function mapAntigravityModel(model) {
   return model;
 }
 
-function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
+function runAntigravity(prompt, { cwd, model, signal, onChunk, home, sandbox } = {}) {
   const actualCwd = cwd || process.cwd();
   const safePrompt = safePromptArg(prompt, 64 * 1024);
-  const args = [
+  let args = [
     `-p=${safePrompt}`,
     "--output-format",
     "text",
@@ -315,26 +361,42 @@ function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
   ];
   const targetModel = mapAntigravityModel(model);
   if (targetModel) args.push("--model", targetModel);
+
+  let command = AGY_BIN;
+  const env = {
+    ...process.env,
+    HOME: home || process.env.HOME,
+    PWD: actualCwd,
+    OLDPWD: "",
+    INIT_CWD: "",
+    VSCODE_CWD: "",
+    GEMINI_HOME,
+  };
+
+  // Optional bubblewrap wrap for detached reviewers only: the sandbox prefix
+  // precedes the real CLI vector after the profile's "--" separator.
+  const launch = sandbox ? buildSandboxLaunch({ sandbox, isolatedDir: actualCwd }) : null;
+  if (launch) {
+    command = launch.command;
+    args = [...launch.args, AGY_BIN, ...args];
+    env.XDG_RUNTIME_DIR = "";
+  }
+
   return runProcess({
     agent: "antigravity",
-    command: AGY_BIN,
+    command,
     args,
     cwd: actualCwd,
     signal,
     onStdout: onChunk,
-    env: {
-      ...process.env,
-      HOME: home || process.env.HOME,
-      PWD: actualCwd,
-      OLDPWD: "",
-      INIT_CWD: "",
-      VSCODE_CWD: "",
-      GEMINI_HOME,
-    },
+    env,
   });
 }
 
-function runAntigravityDetached(prompt, { model = "pro", signal, onChunk } = {}) {
+async function runAntigravityDetached(prompt, { model = "pro", signal, onChunk } = {}) {
+  // Sandbox resolution happens before the temp directory is created so a
+  // fail-closed sandbox mode never leaves scratch directories behind.
+  const sandbox = await resolveReviewerSandboxCached();
   return withIsolatedDirectory((directory) =>
     runAntigravity(prompt, {
       cwd: directory,
@@ -342,6 +404,9 @@ function runAntigravityDetached(prompt, { model = "pro", signal, onChunk } = {})
       model,
       signal,
       onChunk,
+      sandbox: sandbox.active
+        ? { active: true, bwrapBin: sandbox.bwrapBin, geminiHome: sandbox.geminiHome }
+        : null,
     })
   );
 }
@@ -486,11 +551,26 @@ function buildImplementationPrompt(task, plan, initialGitState) {
   ].join("\n");
 }
 
-function buildReviewPrompt(task, plan, implementation, initialGitState, currentGitState, afterContext) {
+function buildReviewPrompt(task, plan, implementation, initialGitState, currentGitState, afterContext, round = 1) {
   return [
     untrustedContextPreamble(),
     "Review the implementation for correctness, regressions, security, missing tests, and whether the original task is actually satisfied.",
     "Focus on concrete defects and actionable corrections. Do not modify files and do not invent changes that are not present in the supplied context.",
+    "Do not request changes for purely stylistic preferences when the implementation is correct, safe, and satisfies the task.",
+    "The current changes include bounded excerpts for untracked new files. Review those files with the same rigor as tracked diffs: they are part of this implementation even though git diff cannot represent them.",
+    "",
+    "# Required verdict protocol",
+    "End your review with exactly one final marker line and nothing after it:",
+    VERDICT_MARKER_APPROVED,
+    "    — when the implementation is correct, safe, and satisfies the task, or only trivial advisory notes remain,",
+    VERDICT_MARKER_CHANGES_REQUESTED,
+    "    — when there is at least one concrete defect, regression, security issue, or missing requirement to fix.",
+    "Never mark APPROVED while a concrete defect you listed remains unfixed.",
+    "",
+    `# Review round ${round}`,
+    round > 1
+      ? "This is a re-review after a refinement cycle. Judge the current full diff on its own merits; earlier rounds' findings that are now resolved must not be re-reported."
+      : "This is the first review round.",
     "",
     "# Original task",
     task,
@@ -512,9 +592,10 @@ function buildReviewPrompt(task, plan, implementation, initialGitState, currentG
   ].join("\n");
 }
 
-function buildRefinementPrompt(task, review, currentGitState) {
+function buildRefinementPrompt(task, review, currentGitState, round = 1) {
   return [
     "Refine the implementation in the actual workspace using the review below.",
+    `This is refinement round ${round}: address the reviewer findings, then expect an independent re-review of the full diff.`,
     "Treat review comments as advisory: verify each point against the files before editing.",
     "Fix justified issues, keep correct existing work, preserve unrelated user changes, and do not run git commit unless the original task explicitly asks for it.",
     "Run focused checks/tests after the corrections when feasible.",
@@ -530,8 +611,8 @@ function buildRefinementPrompt(task, review, currentGitState) {
   ].join("\n");
 }
 
-function emitHeader(onEvent, text, agent, phase) {
-  onEvent?.({ text, agent, phase });
+function emitHeader(onEvent, text, agent, phase, extra = {}) {
+  onEvent?.({ text, agent, phase, ...extra });
 }
 
 export function getResolvedModelsForMode(targetMode, targetModel) {
@@ -586,24 +667,145 @@ export function getResolvedModelsForMode(targetMode, targetModel) {
   }
 }
 
-function formatCollaborativeResult({ plan, implementation, review, refinement }) {
-  return [
-    `> 📊 **【進捗 1/4】** \`[▰▰▱▱▱▱▱▱] 25%\` ── **計画・設計フェーズ** (モデルID: \`gemini-3.1-pro-high\`)\n` +
-    `> 💭 **【推論要約】** ワークスペース構造を分析し、変更対象ファイル・アーキテクチャ制約・実装計画を策定しました。\n\n` +
-    `## Plan (Gemini/Antigravity)\n${clipText(plan, 64 * 1024)}`,
+const COLLABORATIVE_AGENTS = {
+  plan: "gemini-3.1-pro-high",
+  implement: "gpt-6-astra",
+};
 
-    `> 💻 **【進捗 2/4】** \`[▰▰▰▰▱▱▱▱] 50%\` ── **自律実装フェーズ** (モデルID: \`gpt-6-astra\`)\n` +
-    `> 🔨 **【推論要約】** 計画に基づき、コードの編集・作成およびテスト検証を自律実行しました。\n\n` +
-    `## Implementation (Codex/GPT)\n${clipText(implementation, 64 * 1024)}`,
+function progressEmoji(ratio) {
+  const filled = Math.max(0, Math.min(8, Math.round(ratio * 8)));
+  return `[${"▰".repeat(filled)}${"▱".repeat(8 - filled)}]`;
+}
 
-    `> 🔍 **【進捗 3/4】** \`[▰▰▰▰▰▰▱▱] 75%\` ── **独立検査フェーズ** (モデルID: \`gemini-3.1-pro-high\`)\n` +
-    `> 🔎 **【推論要約】** 実装によるGit差分とテスト結果を読み取り専用の隔離環境で検査し、品質と安全性を検証しました。\n\n` +
-    `## Review (Gemini/Antigravity)\n${clipText(review, 64 * 1024)}`,
+function formatReviewLoopHeader(section, round, maxRounds, ratio, summary) {
+  const labels = {
+    plan: "計画・設計フェーズ",
+    implement: "自律実装フェーズ",
+    review: "独立検査フェーズ",
+    refinement: "修正・仕上げフェーズ",
+  };
+  const agents = {
+    plan: "Gemini/Antigravity",
+    implement: "Codex/GPT",
+    review: "Gemini/Antigravity",
+    refinement: "Codex/GPT",
+  };
+  const icons = { plan: "📊", implement: "💻", review: "🔍", refinement: "✨" };
+  const model = COLLABORATIVE_AGENTS[section === "plan" || section === "review" ? "plan" : "implement"];
+  const percent = Math.round(ratio * 100);
+  const roundSuffix = maxRounds > 1 ? ` — Round ${round}` : "";
+  const roundLabel = maxRounds > 1 ? ` (ラウンド ${round}/${maxRounds})` : "";
+  return (
+    `> ${icons[section]} **【${section === "plan" ? "進捗 1" : section === "implement" ? "進捗 2" : "ループ"}】** \`${progressEmoji(ratio)} ${percent}%\` ── **${labels[section]}**${roundLabel} | モデルID: \`${model}\`\n` +
+    `> 💭 **【推論要約】** ${summary}\n\n` +
+    `## ${section === "plan" ? "Plan" : section === "implement" ? "Implementation" : section === "review" ? "Review" : "Refinement"} (${agents[section]})${roundSuffix}\n`
+  );
+}
 
-    `> ✨ **【進捗 4/4】** \`[▰▰▰▰▰▰▰▰] 100%\` ── **修正・仕上げフェーズ** (モデルID: \`gpt-6-astra\`)\n` +
-    `> 🛠️ **【推論要約】** レビューで指摘された改善項目の反映と最終調整を実行しました。\n\n` +
-    `## Refinement (Codex/GPT)\n${clipText(refinement, 64 * 1024)}`,
-  ].join("\n\n---\n\n");
+function formatVerdictTimeline(rounds, converged) {
+  const trail = rounds
+    .map((round) => {
+      const marker =
+        round.verdict === REVIEW_VERDICT_APPROVED
+          ? "✅ `APPROVED`"
+          : round.verdict === REVIEW_VERDICT_UNKNOWN
+            ? "❔ `UNVERIFIED`"
+            : "🔧 `CHANGES_REQUESTED`";
+      return `ラウンド${round.cycle} ${marker}`;
+    })
+    .join(" → ");
+
+  if (converged) {
+    return `> ⚖️ **レビュー収束判定**: ${trail} ── **承認済み** (独立レビュアーが最終差分を承認)\n`;
+  }
+  return (
+    `> ⚠️ **レビュー非収束**: ${trail} ── 最大レビューラウンド数に到達しましたが最終判定は \`CHANGES_REQUESTED\` 相当です。\n` +
+    `> 🔎 解消されていない指摘が残っています。追加の修正ラウンドを明示的に依頼してください。\n`
+  );
+}
+
+function formatCollaborativeResult({ plan, implementation, rounds, review, refinement }) {
+  // Legacy single-round signature: { plan, implementation, review, refinement }
+  if (!Array.isArray(rounds) || rounds.length === 0) {
+    return [
+      `> 📊 **【進捗 1/4】** \`[▰▰▱▱▱▱▱▱] 25%\` ── **計画・設計フェーズ** (モデルID: \`gemini-3.1-pro-high\`)\n` +
+      `> 💭 **【推論要約】** ワークスペース構造を分析し、変更対象ファイル・アーキテクチャ制約・実装計画を策定しました。\n\n` +
+      `## Plan (Gemini/Antigravity)\n${clipText(plan, 64 * 1024)}`,
+
+      `> 💻 **【進捗 2/4】** \`[▰▰▰▰▱▱▱▱] 50%\` ── **自律実装フェーズ** (モデルID: \`gpt-6-astra\`)\n` +
+      `> 🔨 **【推論要約】** 計画に基づき、コードの編集・作成およびテスト検証を自律実行しました。\n\n` +
+      `## Implementation (Codex/GPT)\n${clipText(implementation, 64 * 1024)}`,
+
+      `> 🔍 **【進捗 3/4】** \`[▰▰▰▰▰▰▱▱] 75%\` ── **独立検査フェーズ** (モデルID: \`gemini-3.1-pro-high\`)\n` +
+      `> 🔎 **【推論要約】** 実装によるGit差分とテスト結果を読み取り専用の隔離環境で検査し、品質と安全性を検証しました。\n\n` +
+      `## Review (Gemini/Antigravity)\n${clipText(review, 64 * 1024)}`,
+
+      `> ✨ **【進捗 4/4】** \`[▰▰▰▰▰▰▰▰] 100%\` ── **修正・仕上げフェーズ** (モデルID: \`gpt-6-astra\`)\n` +
+      `> 🛠️ **【推論要約】** レビューで指摘された改善項目の反映と最終調整を実行しました。\n\n` +
+      `## Refinement (Codex/GPT)\n${clipText(refinement, 64 * 1024)}`,
+    ].join("\n\n---\n\n");
+  }
+
+  // Verdict-driven loop output: rounds alternate review / refinement entries.
+  const segments = [
+    formatReviewLoopHeader(
+      "plan",
+      1,
+      1,
+      0.12,
+      "ワークスペース構造を分析し、変更対象ファイル・アーキテクチャ制約・実装計画を策定しました。"
+    ) + clipText(plan, 64 * 1024),
+    formatReviewLoopHeader(
+      "implement",
+      1,
+      1,
+      0.35,
+      "計画に基づき、コードの編集・作成およびテスト検証を自律実行しました。"
+    ) + clipText(implementation, 64 * 1024),
+  ];
+
+  for (const round of rounds) {
+    if (round.review !== undefined) {
+      segments.push(
+        formatReviewLoopHeader(
+          "review",
+          round.cycle,
+          rounds[rounds.length - 1].cycle,
+          round.ratio ?? 0.7,
+          "実装によるGit差分とテスト結果を読み取り専用の隔離環境で検査しました。"
+        ) +
+          clipText(round.review, 64 * 1024) +
+          `\n\n> ⚖️ **判定 (ラウンド ${round.cycle})**: \`${
+            round.verdict === REVIEW_VERDICT_APPROVED
+              ? "APPROVED"
+              : round.verdict === REVIEW_VERDICT_UNKNOWN
+                ? "UNVERIFIED"
+                : "CHANGES_REQUESTED"
+          }\`\n`
+      );
+    } else if (round.refinement !== undefined) {
+      segments.push(
+        formatReviewLoopHeader(
+          "refinement",
+          round.cycle,
+          rounds[rounds.length - 1].cycle,
+          round.ratio ?? 0.85,
+          "レビューで指摘された改善項目を反映し、再検証のための修正を自律実行しました。"
+        ) + clipText(round.refinement, 64 * 1024)
+      );
+    }
+  }
+
+  // The loop always ends on a review entry: converged iff the final review approved.
+  const converged = rounds[rounds.length - 1]?.verdict === REVIEW_VERDICT_APPROVED;
+  segments.push(
+    formatVerdictTimeline(
+      rounds.filter((round) => round.review !== undefined),
+      converged
+    )
+  );
+
+  return segments.join("\n\n---\n\n");
 }
 
 async function buildCollaborationInputs(cwd, prompt) {
@@ -618,7 +820,7 @@ async function buildCollaborationInputs(cwd, prompt) {
   return { workspaceContext, baselineHead, initialGitState };
 }
 
-async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
+async function orchestrate(prompt, { cwd, mode, model, signal, onEvent, maxReviewCycles: maxReviewCyclesOption } = {}) {
   const isAuto = !mode || mode === "auto";
   const taskType = analyzeTask(prompt);
   let selectedMode = isAuto ? taskType.routing : mode;
@@ -803,6 +1005,12 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
         const { workspaceContext, baselineHead, initialGitState } =
           await buildCollaborationInputs(cwd, prompt);
 
+        // Bounded autonomous review loop: plan → implement → (review → refine)*
+        // The reviewer's verdict decides whether refinement runs at all, and the
+        // cycle bound guarantees termination even if the reviewer never approves.
+        const maxReviewCycles = clampReviewCycles(
+          maxReviewCyclesOption ?? DEFAULT_REVIEW_CYCLES
+        );
         updateExecutionState({
           active: true,
           mode: "collaborative",
@@ -811,13 +1019,15 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           modelId: "gemini-3.1-pro-high",
           modelDisplayName: "Gemini 3.1 Pro (High)",
           activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
-          progress: 25,
+          progress: 15,
+          reviewCycles: maxReviewCycles,
+          reviewerIsolation: await describeReviewerIsolation(),
           currentAction: "計画・設計フェーズ [gemini-3.1-pro-high]",
         });
 
         emitHeader(
           onEvent,
-          "> 📊 **【進捗 1/4】** `[▰▰▱▱▱▱▱▱] 25%` ── **計画・設計フェーズ** | モデルID: `gemini-3.1-pro-high` (Gemini 3.1 Pro)\n" +
+          "> 📊 **【進捗 1/4】** `[▰▱▱▱▱▱▱▱] 15%` ── **計画・設計フェーズ** | モデルID: `gemini-3.1-pro-high` (Gemini 3.1 Pro)\n" +
           "> 💭 **【推論要約】** ワークスペース構造を分析し、変更対象ファイル・アーキテクチャ制約・実装計画を策定中...\n\n" +
           "## Plan (Gemini/Antigravity)\n",
           "antigravity",
@@ -842,13 +1052,13 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           modelId: "gpt-6-astra",
           modelDisplayName: "GPT-6-Astra",
           activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
-          progress: 50,
+          progress: 40,
           currentAction: "自律実装フェーズ [gpt-6-astra]",
         });
 
         emitHeader(
           onEvent,
-          "\n\n> 💻 **【進捗 2/4】** `[▰▰▰▰▱▱▱▱] 50%` ── **自律実装フェーズ** | モデルID: `gpt-6-astra` (OpenAI Codex)\n" +
+          "\n\n> 💻 **【進捗 2/4】** `[▰▰▰▱▱▱▱▱] 40%` ── **自律実装フェーズ** | モデルID: `gpt-6-astra` (OpenAI Codex)\n" +
           "> 🔨 **【推論要約】** 計画に基づき、コードの編集・作成およびテスト検証を自律実行中...\n\n" +
           "## Implementation (Codex/GPT)\n",
           "codex",
@@ -863,102 +1073,172 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
           })
         );
 
-        const compressedImpl = compressHandoff(implementation.content, { phase: "implementation" });
+        let compressedImpl = compressHandoff(implementation.content, { phase: "implementation" });
+        let lastWriterCode = implementation.code;
+        const rounds = [];
+        let converged = false;
 
-        const [currentGitState, afterContext] = await Promise.all([
-          buildGitReviewContext(cwd, { baseRef: baselineHead, maxBytes: 48 * 1024 }),
-          buildWorkspaceContext(cwd, {
-            hint: prompt,
-            maxBytes: 32 * 1024,
-            maxFileBytes: 8 * 1024,
-          }),
-        ]);
+        for (let cycle = 1; cycle <= maxReviewCycles; cycle += 1) {
+          const segment = 55 / maxReviewCycles;
+          const cycleStart = 40 + (cycle - 1) * segment;
 
-        updateExecutionState({
-          active: true,
-          mode: "collaborative",
-          phase: "review",
-          agent: "antigravity",
-          modelId: "gemini-3.1-pro-high",
-          modelDisplayName: "Gemini 3.1 Pro (High)",
-          activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
-          progress: 75,
-          currentAction: "独立検査フェーズ [gemini-3.1-pro-high]",
-        });
+          const [currentGitState, afterContext] = await Promise.all([
+            buildGitReviewContext(cwd, {
+              baseRef: baselineHead,
+              maxBytes: 48 * 1024,
+              hint: prompt,
+              includeUntracked: true,
+            }),
+            buildWorkspaceContext(cwd, {
+              hint: prompt,
+              maxBytes: 32 * 1024,
+              maxFileBytes: 8 * 1024,
+            }),
+          ]);
 
-        emitHeader(
-          onEvent,
-          "\n\n> 🔍 **【進捗 3/4】** `[▰▰▰▰▰▰▱▱] 75%` ── **独立検査フェーズ** | モデルID: `gemini-3.1-pro-high` (Gemini 3.1 Pro)\n" +
-          "> 🔎 **【推論要約】** 実装によるGit差分とテスト結果を読み取り専用の隔離環境で検査し、品質と安全性を検証中...\n\n" +
-          "## Review (Gemini/Antigravity)\n",
-          "antigravity",
-          "review-header"
-        );
-        const review = requireSuccessfulAgent(
-          await runAntigravityDetached(
-            buildReviewPrompt(
-              prompt,
-              compressedPlan,
-              compressedImpl,
-              initialGitState,
-              currentGitState,
-              afterContext.text
-            ),
-            {
-              model: "pro",
-              signal,
-              onChunk: (text) =>
-                onEvent?.({ text, agent: "antigravity", phase: "review" }),
-            }
-          )
-        );
+          updateExecutionState({
+            active: true,
+            mode: "collaborative",
+            phase: "review",
+            agent: "antigravity",
+            iteration: cycle,
+            reviewCycles: maxReviewCycles,
+            reviewerIsolation: await describeReviewerIsolation(),
+            modelId: "gemini-3.1-pro-high",
+            modelDisplayName: "Gemini 3.1 Pro (High)",
+            activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
+            progress: Math.min(99, Math.round(cycleStart + segment * 0.4)),
+            currentAction: `独立検査フェーズ ラウンド${cycle} [gemini-3.1-pro-high]`,
+          });
 
-        const compressedReview = compressHandoff(review.content, { phase: "review" });
+          emitHeader(
+            onEvent,
+            `\n\n> 🔍 **【検証 ラウンド ${cycle}/${maxReviewCycles}】** ── **独立検査フェーズ** | モデルID: \`gemini-3.1-pro-high\` (Gemini 3.1 Pro)\n` +
+            "> 🔎 **【推論要約】** 実装によるGit差分とテスト結果を読み取り専用の隔離環境で検査し、品質と安全性を検証中...\n\n" +
+            `## Review (Gemini/Antigravity)${maxReviewCycles > 1 ? ` — Round ${cycle}` : ""}\n`,
+            "antigravity",
+            "review-header",
+            { iteration: cycle }
+          );
+          const review = requireSuccessfulAgent(
+            await runAntigravityDetached(
+              buildReviewPrompt(
+                prompt,
+                compressedPlan,
+                compressedImpl,
+                initialGitState,
+                currentGitState,
+                afterContext.text,
+                cycle
+              ),
+              {
+                model: "pro",
+                signal,
+                onChunk: (text) =>
+                  onEvent?.({ text, agent: "antigravity", phase: "review", iteration: cycle }),
+              }
+            )
+          );
 
-        updateExecutionState({
-          active: true,
-          mode: "collaborative",
-          phase: "refinement",
-          agent: "codex",
-          modelId: "gpt-6-astra",
-          modelDisplayName: "GPT-6-Astra",
-          activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
-          progress: 95,
-          currentAction: "修正・仕上げフェーズ [gpt-6-astra]",
-        });
+          const verdictInfo = parseReviewVerdict(review.content);
+          rounds.push({ cycle, review: review.content, verdict: verdictInfo.verdict });
 
-        emitHeader(
-          onEvent,
-          "\n\n> ✨ **【進捗 4/4】** `[▰▰▰▰▰▰▰▰] 100%` ── **修正・仕上げフェーズ** | モデルID: `gpt-6-astra` (OpenAI Codex)\n" +
-          "> 🛠️ **【推論要約】** レビューで指摘された改善項目の反映と最終調整を実行中...\n\n" +
-          "## Refinement (Codex/GPT)\n",
-          "codex",
-          "refinement-header"
-        );
-        const refinement = requireSuccessfulAgent(
-          await runCodex(buildRefinementPrompt(prompt, compressedReview, currentGitState), {
-            cwd,
-            signal,
-            onChunk: (text) =>
-              onEvent?.({ text, agent: "codex", phase: "refinement" }),
-          })
-        );
+          const loopAction = nextReviewLoopAction({
+            verdict: verdictInfo.verdict,
+            cycle,
+            maxReviewCycles,
+          });
+
+          emitHeader(
+            onEvent,
+            `\n\n> ⚖️ **レビュー判定 (ラウンド ${cycle}/${maxReviewCycles})**: \`${
+              verdictInfo.verdict === REVIEW_VERDICT_APPROVED
+                ? "APPROVED"
+                : verdictInfo.verdict === REVIEW_VERDICT_UNKNOWN
+                  ? "UNVERIFIED"
+                  : "CHANGES_REQUESTED"
+            }\` ── ${loopAction.action === "complete" && loopAction.converged ? "承認。ループを完了します。" : loopAction.action === "refine" ? "指摘を反映する修正ラウンドを実行します。" : "最大ラウンド数に到達。未解決の指摘を明示的に報告します。"}\n`,
+            "auto",
+            "review-verdict",
+            { iteration: cycle, verdict: verdictInfo.verdict, reviewCycles: maxReviewCycles }
+          );
+
+          if (loopAction.action === "complete") {
+            converged = loopAction.converged;
+            break;
+          }
+
+          const compressedReview = compressHandoff(verdictInfo.findings, { phase: "review" });
+
+          updateExecutionState({
+            active: true,
+            mode: "collaborative",
+            phase: "refinement",
+            agent: "codex",
+            iteration: cycle,
+            reviewCycles: maxReviewCycles,
+            reviewVerdict: verdictInfo.verdict,
+            modelId: "gpt-6-astra",
+            modelDisplayName: "GPT-6-Astra",
+            activeModels: ["gemini-3.1-pro-high", "gpt-6-astra"],
+            progress: Math.min(99, Math.round(cycleStart + segment * 0.75)),
+            currentAction: `修正ラウンド${cycle} [gpt-6-astra]`,
+          });
+
+          emitHeader(
+            onEvent,
+            `\n\n> ✨ **【修正 ラウンド ${cycle}/${maxReviewCycles}】** ── **修正フェーズ** | モデルID: \`gpt-6-astra\` (OpenAI Codex)\n` +
+            "> 🛠️ **【推論要約】** レビューで指摘された改善項目を反映し、再検証に向けた修正を自律実行中...\n\n" +
+            `## Refinement (Codex/GPT)${maxReviewCycles > 1 ? ` — Round ${cycle}` : ""}\n`,
+            "codex",
+            "refinement-header",
+            { iteration: cycle, verdict: verdictInfo.verdict }
+          );
+          const refinement = requireSuccessfulAgent(
+            await runCodex(
+              buildRefinementPrompt(prompt, compressedReview, currentGitState, cycle),
+              {
+                cwd,
+                signal,
+                onChunk: (text) =>
+                  onEvent?.({ text, agent: "codex", phase: "refinement", iteration: cycle }),
+              }
+            )
+          );
+
+          lastWriterCode = refinement.code;
+          rounds.push({ cycle, refinement: refinement.content });
+          // The next review round judges the newest implementer report and diff.
+          compressedImpl = compressHandoff(refinement.content, { phase: "implementation" });
+        }
+
+        const finalVerdict = rounds[rounds.length - 1]?.verdict ?? REVIEW_VERDICT_UNKNOWN;
+        const reviewRounds = rounds.filter((round) => round.review !== undefined).length;
 
         updateExecutionState({
           active: false,
           progress: 100,
-          currentAction: "協調コーディング完了",
+          phase: "complete",
+          iteration: reviewRounds,
+          reviewCycles: maxReviewCycles,
+          reviewVerdict: finalVerdict,
+          reviewConverged: converged,
+          currentAction: converged
+            ? `協調コーディング完了 (レビュー承認、${reviewRounds}ラウンド)`
+            : `協調コーディング完了 (レビュー非収束、${reviewRounds}ラウンド)`,
         });
 
         return {
           content: formatCollaborativeResult({
             plan: plan.content,
             implementation: implementation.content,
-            review: review.content,
-            refinement: refinement.content,
+            rounds,
           }),
           agent: "collaborative",
-          code: refinement.code,
+          code: lastWriterCode,
+          reviewVerdict: finalVerdict,
+          reviewCycles: reviewRounds,
+          reviewConverged: converged,
         };
       } catch (err) {
         // Never retry a workspace-writing workflow through a response-only agent.

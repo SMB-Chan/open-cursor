@@ -17,12 +17,14 @@ function sampleConfig() {
       killGraceMs: 1500,
       maxBodyBytes: 1048576,
       maxOutputBytes: 8388608,
+      reviewerSandbox: "off",
     },
     context: {
       maxFiles: 300,
       maxBytes: 131072,
       maxFileBytes: 12288,
       diffMaxBytes: 98304,
+      untrackedMaxBytes: 24576,
       omitSecretLikePaths: true,
     },
     collaboration: {
@@ -30,6 +32,7 @@ function sampleConfig() {
       collaborative: ["plan", "implement", "review", "refine"],
       reviewerWorkingDirectory: "detached-temporary",
       workspaceWriter: "codex",
+      maxReviewCycles: 2,
     },
     agents: {
       codex: {
@@ -72,10 +75,13 @@ test("configuration file provides runtime defaults", () => {
   assert.equal(parsed.bridge.host, "127.0.0.1");
   assert.equal(parsed.bridge.allowRemote, false);
   assert.equal(parsed.execution.agentTimeoutMs, 600000);
+  assert.equal(parsed.execution.reviewerSandbox, "off");
   assert.equal(parsed.context.maxBytes, 131072);
+  assert.equal(parsed.context.untrackedMaxBytes, 24576);
   assert.equal(parsed.agents.antigravity.binary, "/home/demo/bin/agy");
   assert.equal(parsed.agents.mimo.workspaceAccess, "none");
   assert.equal(parsed.agents.mimo.model, "mimo-v2.5-pro");
+  assert.equal(parsed.collaboration.maxReviewCycles, 2);
   assert.deepEqual(parsed.overrides, []);
 });
 
@@ -86,6 +92,8 @@ test("environment variables override file values and are reported by name only",
       BRIDGE_PORT: "9999",
       BRIDGE_AGENT_TIMEOUT_MS: "120000",
       BRIDGE_CONTEXT_MAX_FILES: "500",
+      BRIDGE_UNTRACKED_MAX_BYTES: "0",
+      BRIDGE_REVIEWER_SANDBOX: "auto",
       BRIDGE_ALLOW_REMOTE: "1",
       AGY_BIN: "/opt/agy",
       MIMO_ENABLED: "0",
@@ -98,7 +106,9 @@ test("environment variables override file values and are reported by name only",
   assert.equal(parsed.bridge.port, 9999);
   assert.equal(parsed.bridge.allowRemote, true);
   assert.equal(parsed.execution.agentTimeoutMs, 120000);
+  assert.equal(parsed.execution.reviewerSandbox, "auto");
   assert.equal(parsed.context.maxFiles, 500);
+  assert.equal(parsed.context.untrackedMaxBytes, 0);
   assert.equal(parsed.agents.antigravity.binary, "/opt/agy");
   assert.equal(parsed.agents.mimo.enabled, false);
   assert.equal(parsed.agents.mimo.endpoint, "https://mimo.example/v1/chat/completions");
@@ -109,6 +119,8 @@ test("environment variables override file values and are reported by name only",
       "BRIDGE_PORT",
       "BRIDGE_AGENT_TIMEOUT_MS",
       "BRIDGE_CONTEXT_MAX_FILES",
+      "BRIDGE_UNTRACKED_MAX_BYTES",
+      "BRIDGE_REVIEWER_SANDBOX",
       "BRIDGE_ALLOW_REMOTE",
       "AGY_BIN",
       "MIMO_ENABLED",
@@ -116,6 +128,30 @@ test("environment variables override file values and are reported by name only",
       "MIMO_MODEL",
     ])
   );
+});
+
+test("reviewer sandbox mode accepts only documented values from file and environment", () => {
+  assert.throws(
+    () =>
+      parseRuntimeConfig(
+        { ...sampleConfig(), execution: { ...sampleConfig().execution, reviewerSandbox: "firejail" } },
+        {},
+        "/home/demo"
+      ),
+    (error) => error instanceof RuntimeConfigError && /reviewerSandbox/.test(error.message)
+  );
+  assert.throws(
+    () => parseRuntimeConfig(sampleConfig(), { BRIDGE_REVIEWER_SANDBOX: "landlock" }),
+    (error) => error instanceof RuntimeConfigError && /BRIDGE_REVIEWER_SANDBOX/.test(error.message)
+  );
+
+  const explicit = parseRuntimeConfig(
+    sampleConfig(),
+    { BRIDGE_REVIEWER_SANDBOX: "bubblewrap" },
+    "/home/demo"
+  );
+  assert.equal(explicit.execution.reviewerSandbox, "bubblewrap");
+  assert.deepEqual(explicit.overrides, ["BRIDGE_REVIEWER_SANDBOX"]);
 });
 
 test("invalid environment overrides fail instead of silently falling back", () => {
@@ -127,6 +163,76 @@ test("invalid environment overrides fail instead of silently falling back", () =
     () => parseRuntimeConfig(sampleConfig(), { MIMO_ENABLED: "maybe" }),
     (error) => error instanceof RuntimeConfigError && /MIMO_ENABLED/.test(error.message)
   );
+});
+
+test("review loop cycle bound comes from the file and accepts a validated override", () => {
+  const raised = parseRuntimeConfig(
+    { ...sampleConfig(), collaboration: { ...sampleConfig().collaboration, maxReviewCycles: 3 } },
+    {},
+    "/home/demo"
+  );
+  assert.equal(raised.collaboration.maxReviewCycles, 3);
+
+  const overridden = parseRuntimeConfig(
+    sampleConfig(),
+    { BRIDGE_MAX_REVIEW_CYCLES: "4" },
+    "/home/demo"
+  );
+  assert.equal(overridden.collaboration.maxReviewCycles, 4);
+  assert.deepEqual(overridden.overrides, ["BRIDGE_MAX_REVIEW_CYCLES"]);
+});
+
+test("review loop cycle bound rejects out-of-range and malformed values", () => {
+  for (const badFile of [0, 5, -1, 2.5]) {
+    assert.throws(
+      () =>
+        parseRuntimeConfig(
+          { ...sampleConfig(), collaboration: { ...sampleConfig().collaboration, maxReviewCycles: badFile } },
+          {},
+          "/home/demo"
+        ),
+      (error) => error instanceof RuntimeConfigError && /maxReviewCycles/.test(error.message)
+    );
+  }
+
+  for (const badEnv of ["0", "5", "junk", "2.5"]) {
+    assert.throws(
+      () => parseRuntimeConfig(sampleConfig(), { BRIDGE_MAX_REVIEW_CYCLES: badEnv }),
+      (error) => error instanceof RuntimeConfigError && /BRIDGE_MAX_REVIEW_CYCLES/.test(error.message)
+    );
+  }
+});
+
+test("untracked excerpt budget rejects malformed values and accepts the validated range", () => {
+  assert.throws(
+    () =>
+      parseRuntimeConfig(
+        { ...sampleConfig(), context: { ...sampleConfig().context, untrackedMaxBytes: -1 } },
+        {},
+        "/home/demo"
+      ),
+    (error) => error instanceof RuntimeConfigError && /untrackedMaxBytes/.test(error.message)
+  );
+  assert.throws(
+    () =>
+      parseRuntimeConfig(
+        { ...sampleConfig(), context: { ...sampleConfig().context, untrackedMaxBytes: 1048577 } },
+        {},
+        "/home/demo"
+      ),
+    (error) => error instanceof RuntimeConfigError && /untrackedMaxBytes/.test(error.message)
+  );
+  assert.throws(
+    () => parseRuntimeConfig(sampleConfig(), { BRIDGE_UNTRACKED_MAX_BYTES: "junk" }),
+    (error) => error instanceof RuntimeConfigError && /BRIDGE_UNTRACKED_MAX_BYTES/.test(error.message)
+  );
+
+  const disabled = parseRuntimeConfig(
+    { ...sampleConfig(), context: { ...sampleConfig().context, untrackedMaxBytes: 0 } },
+    {},
+    "/home/demo"
+  );
+  assert.equal(disabled.context.untrackedMaxBytes, 0);
 });
 
 test("runtime defaults populate missing process environment without replacing overrides", () => {

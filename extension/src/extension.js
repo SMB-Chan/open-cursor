@@ -395,6 +395,8 @@ function registerChatCommand(context) {
               text: event.delta,
               agent: event.agent,
               phase: event.phase,
+              iteration: event.iteration,
+              verdict: event.verdict,
               metadata: event.metadata,
             }),
           (bridgeRequestId) => {
@@ -528,6 +530,9 @@ function getChatHTML(webview) {
     .phase-pill.active { color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     .phase-pill.done::before { content: '✓ '; }
     .phase-pill.done { color: var(--vscode-testing-iconPassed); }
+    .phase-pill.warn { color: var(--vscode-editorWarning-foreground); border-color: var(--vscode-editorWarning-foreground); }
+    .phase-pill.warn::before { content: '! '; }
+    .phase-pill.approved { color: var(--vscode-testing-iconPassed); border-color: var(--vscode-testing-iconPassed); }
     .phase-pill.cancelled { text-decoration: line-through; opacity: .7; }
     .phase-pill.failed { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
     .assistant-body { padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -598,6 +603,7 @@ function getChatHTML(webview) {
     let activePhase = null;
     let receivedDelta = false;
     let phaseNodes = new Map();
+    let loopRounds = {};
 
     function addMsg(text, cls) {
       const div = document.createElement('div');
@@ -612,7 +618,7 @@ function getChatHTML(webview) {
       const phase = String(rawPhase || '').replace(/-header$/, '');
       if (phase === 'planning' || phase === 'analysis') return 'plan';
       if (phase === 'implementation') return 'implement';
-      if (phase === 'review') return 'review';
+      if (phase === 'review' || phase === 'review-verdict') return 'review';
       if (phase === 'refinement') return 'refine';
       if (phase === 'response') return 'respond';
       return phase || null;
@@ -635,6 +641,7 @@ function getChatHTML(webview) {
     function createAssistant(selectedMode) {
       assistantCard = document.createElement('div');
       assistantCard.className = 'assistant-card';
+      loopRounds = {};
 
       const meta = document.createElement('div');
       meta.className = 'run-meta';
@@ -733,7 +740,7 @@ function getChatHTML(webview) {
       return pill;
     }
 
-    function updateExecutionMeta(agent, rawPhase) {
+    function updateExecutionMeta(agent, rawPhase, iteration, verdict) {
       const phase = phaseKey(rawPhase);
       if (!phase) return;
 
@@ -747,8 +754,20 @@ function getChatHTML(webview) {
 
       const node = ensurePhaseNode(phase);
       if (node) {
-        node.classList.remove('done', 'cancelled', 'failed');
+        node.classList.remove('done', 'cancelled', 'failed', 'warn', 'approved');
         node.classList.add('active');
+
+        const round = Number(iteration);
+        if ((phase === 'review' || phase === 'refine') && Number.isFinite(round) && round > 0) {
+          if (round > (loopRounds[phase] || 0)) loopRounds[phase] = round;
+          const base = PHASE_LABELS[phase] || phase;
+          node.textContent = loopRounds[phase] > 1 ? base + ' ×' + round : base;
+        }
+        if (phase === 'review' && verdict === 'approved') {
+          node.classList.add('approved');
+        } else if (phase === 'review' && (verdict === 'changes_requested' || verdict === 'unknown')) {
+          node.classList.add('warn');
+        }
       }
       activePhase = phase;
       if (agentBadge) {
@@ -813,7 +832,7 @@ function getChatHTML(webview) {
         createAssistant(msg.mode || mode.value);
       } else if (msg.type === 'delta') {
         if (!assistantCard) createAssistant(mode.value);
-        updateExecutionMeta(msg.agent, msg.phase);
+        updateExecutionMeta(msg.agent, msg.phase, msg.iteration, msg.verdict);
 
         if (typeof msg.text === 'string' && msg.text.length > 0) {
           if (!receivedDelta) {

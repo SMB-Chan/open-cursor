@@ -447,6 +447,21 @@
       </div>
 
       <div class="card">
+        <div class="card-title"><span>🔬 実行状態 (協調レビューループ)</span></div>
+        <div style="font-size: 13px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="color: var(--text);"><span id="exec-action">待機中</span></div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="flex: 1; height: 6px; background: var(--card-border); border-radius: 3px; overflow: hidden;">
+              <div id="exec-progress-bar" style="height: 100%; width: 0%; background: var(--accent-green); transition: width .3s;"></div>
+            </div>
+            <span id="exec-progress-text" style="min-width: 34px; text-align: right;">0%</span>
+          </div>
+          <div style="color: var(--text-muted);">フェーズ: <span id="exec-phase" style="color: var(--text);">-</span> · 稼働モデル: <span id="exec-agent" style="color: var(--text);">-</span></div>
+          <div style="color: var(--text-muted);">レビューループ: <span id="exec-loop" style="color: var(--text);">-</span></div>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-title"><span>📡 サーバー情報</span></div>
         <div style="font-size: 13px; display: flex; flex-direction: column; gap: 6px;">
           <div>モバイル接続先: <code id="stat-ip">-</code></div>
@@ -763,6 +778,37 @@
         const bridgeOnline = data.bridge && data.bridge.status === 'ok';
         document.getElementById('status-dot').className = 'status-dot ' + (bridgeOnline ? '' : 'offline');
         document.getElementById('bridge-status-text').textContent = bridgeOnline ? 'Ready' : 'Bridge Offline';
+
+        const execution = data.monitor && data.monitor.execution;
+        if (execution) {
+          document.getElementById('exec-action').textContent =
+            execution.currentAction || (execution.active ? '実行中' : '待機中 (アイドル)');
+          const pct = Math.max(0, Math.min(100, Number(execution.progress) || 0));
+          document.getElementById('exec-progress-bar').style.width = pct + '%';
+          document.getElementById('exec-progress-text').textContent = pct + '%';
+          document.getElementById('exec-phase').textContent = execution.phase || '-';
+          document.getElementById('exec-agent').textContent = execution.modelDisplayName || execution.agent || '-';
+
+          const loopEl = document.getElementById('exec-loop');
+          if (execution.reviewCycles) {
+            const verdictLabel =
+              execution.reviewVerdict === 'approved' ? '✅ APPROVED'
+                : execution.reviewVerdict === 'unknown' ? '❔ UNVERIFIED'
+                  : execution.reviewVerdict ? '🔧 CHANGES_REQUESTED' : '…判定待ち';
+            const convergence =
+              execution.reviewConverged === true ? '収束'
+                : execution.reviewConverged === false ? '⚠️ 非収束'
+                  : '';
+            loopEl.textContent =
+              `${execution.iteration ?? 0}/${execution.reviewCycles} ラウンド · ${verdictLabel}` +
+              (convergence ? ` · ${convergence}` : '');
+            loopEl.style.color = execution.reviewConverged === false ? 'var(--accent-orange)' : 'var(--text)';
+          } else {
+            loopEl.textContent = '-';
+          }
+        } else {
+          document.getElementById('exec-action').textContent = 'ブリッジオフライン';
+        }
 
         if (data.monitor && data.monitor.llm) {
           const m = data.monitor.llm;

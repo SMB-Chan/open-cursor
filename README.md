@@ -9,7 +9,7 @@ Current backends and orchestration paths:
 - **Xiaomi MiMo** — optional remote, API-key/token-plan-backed **read-only** solution drafting
 - **Auto** — side-effect-aware routing that never substitutes a read-only provider for a workspace writer
 - **Pipeline** — Gemini Plan → Codex Implement
-- **Collaborative** — Gemini Plan → Codex Implement → Gemini Review → Codex Refine
+- **Collaborative** — Gemini Plan → Codex Implement → verdict-driven Review loop (bounded Review → Refine cycles until the reviewer approves, or the cycle bound is reached)
 
 > The local Open-Cursor bridge does not add its own usage charge. Provider billing/authentication is per-agent: Codex and Antigravity may use subscription-backed authentication, while the optional MiMo integration uses an external API key/token plan. Verify the active provider configuration before use.
 
@@ -41,18 +41,40 @@ The HTTP layer lives in `server/index.js`, execution/orchestration in `server/en
 
 Earlier versions could run two write-capable agents against the same workspace concurrently. That creates a race: both agents can edit the same file based on different snapshots.
 
-Open-Cursor 2.3 changes collaborative mode to:
+Open-Cursor 2.3 made collaborative mode sequential. Open-Cursor 2.5 turned the tail of that sequence into a bounded autonomous review loop:
 
 ```text
 1. Gemini / Antigravity  — Plan
 2. Codex                 — Implement
-3. Gemini / Antigravity  — Review
-4. Codex                 — Refine
+3. ── review loop (bounded by collaboration.maxReviewCycles, default 2) ──
+     Gemini / Antigravity  — Review → emits VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED
+     approved  → loop ends (no refinement pass is spent on approved work)
+     otherwise → Codex      — Refine the findings, then the diff is re-reviewed
+4. The summary reports the verdict timeline and, if the loop hit its bound
+   without approval, says so explicitly instead of implying success.
 ```
 
 Only Codex is intentionally given the actual workspace for the write phases. Automatic Gemini planning/review receives a bounded context pack and runs from a temporary working directory instead of the project directory.
 
-This is **not an operating-system sandbox**. A detached working directory reduces accidental workspace coupling and avoids passing the workspace path as the working directory, but the upstream CLI still runs with the permissions of the local user. Do not treat it as a security boundary against a malicious local process or compromised CLI.
+Loop safety properties:
+
+- the reviewer's verdict is parsed from an explicit final marker (`VERDICT: APPROVED` / `VERDICT: CHANGES_REQUESTED`); an unparsable or missing verdict is treated conservatively as *changes requested*, so a degraded reviewer can never silently wave work through
+- each re-review receives the refreshed Git diff, bounded excerpts of new/untracked files (new files are invisible to `git diff`), the newest implementer report, and instructions not to re-report findings it already sees resolved
+- the loop is hard-bounded (`collaboration.maxReviewCycles`, validated 1–4, default 2), so a reviewer that never approves still terminates
+- the fixed stage order is unchanged: review always precedes refine; refine is always followed by another review
+- non-convergence is reported as non-convergence — a run that exhausts its cycles is never dressed up as a success
+
+A detached working directory reduces accidental workspace coupling and avoids passing the workspace path as the working directory, but by itself it is **not an operating-system sandbox**: the upstream CLI still runs with the permissions of the local user. Do not treat it as a security boundary against a malicious local process or compromised CLI.
+
+For stronger isolation, detached reviewer processes can additionally run inside a bubblewrap mount namespace via `execution.reviewerSandbox` (env `BRIDGE_REVIEWER_SANDBOX`):
+
+| Mode | Behavior |
+| --- | --- |
+| `off` | historical detached-temporary behavior (default) |
+| `auto` | use bubblewrap when a probe succeeds; otherwise run unsandboxed and report `auto-unavailable` |
+| `bubblewrap` | require a working bubblewrap facility; requests fail closed (HTTP 503) when the probe fails |
+
+Inside the sandbox the whole filesystem is read-only; only the reviewer's isolated temporary directory, `GEMINI_HOME` (so OAuth token refresh keeps working), `/tmp`, and `/run` are writable. The workspace therefore cannot be modified by reviewer processes that are never supposed to write to it. The sandbox is applied only to detached reviewers — workspace writers (Codex, explicitly selected Antigravity) are never wrapped. The active mode is reported as `reviewerIsolation` in execution state (`GET /monitor`).
 
 ## Repository context pack
 
@@ -61,6 +83,7 @@ Planning/review does not blindly copy the repository. `server/context.js` create
 - a capped workspace file map
 - selected small source/config/document excerpts ranked against the task
 - bounded Git status/diff evidence for review
+- bounded excerpts for untracked new files during collaborative review rounds, because `git diff` cannot represent files that were never tracked
 - a baseline Git HEAD so later agent commits can still be reviewed against the pre-implementation state
 
 Default limits:
@@ -71,6 +94,7 @@ Default limits:
 | context pack | 128 KiB |
 | individual excerpt | 12 KiB |
 | review diff | 96 KiB |
+| review untracked-file excerpts | 24 KiB cap per round (validated 0–1 MiB, `0` disables) |
 
 Secret-like paths are omitted from generated agent context, including common `.env`, credential/token/secret names, private keys, and keystore formats. Repository content is explicitly framed as **untrusted project data** so instructions embedded inside files are not supposed to override the planning/review task.
 
@@ -212,9 +236,11 @@ An explicitly requested `antigravity` route is treated differently from automati
 
 ## Streaming and execution UI
 
-`stream: true` sends child-process stdout through SSE as it arrives. SSE events also carry `open_cursor.agent` and `open_cursor.phase` metadata.
+`stream: true` sends child-process stdout through SSE as it arrives. SSE events also carry `open_cursor.agent`, `open_cursor.phase`, and — inside the collaborative review loop — `open_cursor.iteration` and `open_cursor.verdict` (`approved` / `changes_requested` / `unknown`).
 
-The Cursor chat UI renders that metadata independently from the answer body. Collaborative runs expose **Plan / Implement / Review / Refine** progress and the active Gemini/Codex backend; pipeline runs expose **Plan / Implement**.
+The Cursor chat UI renders that metadata independently from the answer body. Collaborative runs expose **Plan / Implement / Review / Refine** progress with per-round badges (`Review ×2`) and review-verdict marks; pipeline runs expose **Plan / Implement**.
+
+The final chunk of a collaborative run additionally reports `review_verdict`, `review_cycles`, and `review_converged` so clients can react to a non-converged review without parsing prose.
 
 The extension's **Stop** action aborts its fetch. The bridge propagates the disconnect/abort to all child processes owned by that request, sends `SIGTERM`, and escalates to `SIGKILL` after the grace period when necessary.
 
@@ -269,6 +295,9 @@ BRIDGE_CONTEXT_MAX_FILES
 BRIDGE_CONTEXT_MAX_BYTES
 BRIDGE_CONTEXT_FILE_BYTES
 BRIDGE_DIFF_MAX_BYTES
+BRIDGE_UNTRACKED_MAX_BYTES
+BRIDGE_REVIEWER_SANDBOX
+BRIDGE_MAX_REVIEW_CYCLES
 CODEX_BIN
 AGY_BIN
 CODEX_ENABLED
@@ -290,7 +319,8 @@ Several properties are validated as invariants rather than freely configurable k
 - the workspace writer must remain Codex
 - automatic reviewer cwd must remain detached-temporary
 - pipeline order remains Plan → Implement
-- collaborative order remains Plan → Implement → Review → Refine
+- collaborative order remains Plan → Implement → Review → Refine (the verdict-driven loop may repeat Review → Refine within this order, but never reorders it)
+- the collaborative review-loop bound `collaboration.maxReviewCycles` stays a validated integer between 1 and 4 so autonomous loops always terminate
 - loopback/browser-origin/concurrent-writer protection declarations remain fixed in the schema
 
 `agents.codex.enabled`, `agents.antigravity.enabled`, and `agents.mimo.enabled` control model advertisement and routing availability. MiMo is additionally constrained to `workspaceAccess: "none"` by runtime validation. A request needing a disabled agent fails before execution begins.
@@ -303,6 +333,7 @@ Several properties are validated as invariants rather than freely configurable k
 | combined child stdout/stderr | 8 MiB |
 | per-agent execution timeout | 10 minutes |
 | SIGTERM → SIGKILL grace | 1.5 seconds |
+| collaborative review-loop cycles | 2 (validated range 1–4) |
 
 `GET /health` and `GET /v1/agents` expose non-sensitive execution state such as active execution count and configured limits. Prompts and workspace paths are not included.
 
@@ -351,6 +382,7 @@ Current protections include:
 - secret-like path omission from generated context/review evidence
 - bounded context generation
 - detached temporary working directories for automatic Gemini planning/review
+- optional bubblewrap mount-namespace isolation for those detached reviewers (`execution.reviewerSandbox: off | auto | bubblewrap`; the explicit mode fails closed on a failed facility probe)
 - preservation instructions for pre-existing user changes
 - managed-process ownership in the extension
 - webview Content Security Policy
@@ -379,6 +411,11 @@ Tests cover, among other things:
 - baseline Git diff tracking
 - temporary reviewer-directory cleanup
 - collaboration prompt contracts for Plan / Implement / Review / Refine
+- review-verdict parsing (aliases, markdown fences, last-marker-wins, unknown fallback)
+- bounded review-loop policy (approve/refine/terminate decisions)
+- full orchestrate() review-loop behavior against stub agent binaries: convergence, approval short-circuit, and honest non-convergence at the cycle bound
+- untracked-file review excerpts: inclusion on request, secret-like/gitignored omission, per-file clipping, and total budget enforcement
+- reviewer sandbox: strict mode parsing, narrow writable-binds profile, facility probing via stub binaries, auto vs fail-closed resolution, and end-to-end proof that detached reviewers are wrapped while the workspace writer is not
 
 Extension checks/tests:
 
@@ -392,11 +429,12 @@ CI also validates shell launcher syntax and configuration JSON syntax.
 
 ## Current direction
 
-The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model.
+The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model. The collaborative workflow is now a closed autonomous loop: the reviewer's verdict decides whether refinement runs, refinement is re-reviewed against refreshed evidence (including bounded excerpts of new/untracked files), and non-convergence is reported honestly (2.5/2.6). Detached reviewers can additionally be isolated in an optional bubblewrap mount namespace (2.7).
 
 Near-term priorities are:
 
-1. add installation/upgrade smoke tests and release packaging
-2. include safe bounded excerpts for newly-created/untracked files in review context
-3. add optional stronger OS-level isolation for detached reviewer processes when a supported sandbox facility is available
-4. make automatic routing rules configurable without weakening the fixed write-safety invariants
+1. make automatic routing rules configurable without weakening the fixed write-safety invariants
+2. support reviewer-directed follow-up reads so bounded budgets stay small while review precision improves
+3. release packaging with pinned, reproducible install/upgrade verification
+
+The mobile dashboard status tab renders live execution telemetry, including the review-loop round (`n/max`), the latest parsed verdict, and convergence state (2.6).

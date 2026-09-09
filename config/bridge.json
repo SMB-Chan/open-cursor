@@ -9,14 +9,16 @@
     "agentTimeoutMs": 600000,
     "killGraceMs": 1500,
     "maxBodyBytes": 1048576,
-    "maxOutputBytes": 8388608
+    "maxOutputBytes": 8388608,
+    "reviewerSandbox": "off"
   },
   "context": {
     "maxFiles": 300,
     "maxBytes": 131072,
     "maxFileBytes": 12288,
     "diffMaxBytes": 98304,
-    "omitSecretLikePaths": true
+    "omitSecretLikePaths": true,
+    "untrackedMaxBytes": 24576
   },
   "collaboration": {
     "pipeline": [
@@ -30,7 +32,8 @@
       "refine"
     ],
     "reviewerWorkingDirectory": "detached-temporary",
-    "workspaceWriter": "codex"
+    "workspaceWriter": "codex",
+    "maxReviewCycles": 2
   },
   "agents": {
     "codex": {

@@ -47,7 +47,8 @@
         "agentTimeoutMs",
         "killGraceMs",
         "maxBodyBytes",
-        "maxOutputBytes"
+        "maxOutputBytes",
+        "reviewerSandbox"
       ],
       "properties": {
         "agentTimeoutMs": {
@@ -65,6 +66,15 @@
         "maxOutputBytes": {
           "type": "integer",
           "minimum": 1024
+        },
+        "reviewerSandbox": {
+          "type": "string",
+          "enum": [
+            "off",
+            "auto",
+            "bubblewrap"
+          ],
+          "description": "Optional OS-level isolation for detached reviewer processes. off keeps the historical detached-temporary behavior; auto uses bubblewrap when a probe succeeds and proceeds unsandboxed otherwise; bubblewrap requires a working facility and fails closed (HTTP 503) when unavailable. Never applied to workspace writers."
         }
       }
     },
@@ -76,7 +86,8 @@
         "maxBytes",
         "maxFileBytes",
         "diffMaxBytes",
-        "omitSecretLikePaths"
+        "omitSecretLikePaths",
+        "untrackedMaxBytes"
       ],
       "properties": {
         "maxFiles": {
@@ -101,6 +112,12 @@
         },
         "omitSecretLikePaths": {
           "const": true
+        },
+        "untrackedMaxBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576,
+          "description": "Cap for bounded excerpts of new/untracked files embedded into collaborative review context. 0 disables the excerpt pass; git status/diff evidence is unaffected."
         }
       }
     },
@@ -111,7 +128,8 @@
         "pipeline",
         "collaborative",
         "reviewerWorkingDirectory",
-        "workspaceWriter"
+        "workspaceWriter",
+        "maxReviewCycles"
       ],
       "properties": {
         "pipeline": {
@@ -144,13 +162,20 @@
             }
           ],
           "minItems": 4,
-          "maxItems": 4
+          "maxItems": 4,
+          "description": "Fixed sequential stages. The verdict-driven loop may repeat review/refine within this order; review always precedes refine."
         },
         "reviewerWorkingDirectory": {
           "const": "detached-temporary"
         },
         "workspaceWriter": {
           "const": "codex"
+        },
+        "maxReviewCycles": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "description": "Maximum number of review rounds in the collaborative verdict-driven loop. Each round may run a refinement between reviews. Bounded to keep autonomous loops terminating."
         }
       }
     },

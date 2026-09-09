@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 
 import {
   buildGitReviewContext,
+  buildUntrackedFileContext,
   buildWorkspaceContext,
   getGitHead,
   isSecretPath,
@@ -139,4 +140,115 @@ test("isolated reviewer directory is removed after use", async () => {
 
   assert.equal(value, 42);
   await assert.rejects(access(isolatedPath));
+});
+
+test("git review context includes bounded excerpts for untracked new files on request", async () => {
+  await withTempDir(async (directory) => {
+    await initRepo(directory);
+    await writeFile(join(directory, "tracked.js"), "export const tracked = 1;\n");
+    await writeFile(join(directory, "README.md"), "# Demo\nExisting tracked readme.\n");
+    await run("git", ["add", "."], directory);
+    await run("git", ["commit", "-m", "init"], directory);
+
+    await writeFile(join(directory, "new-helper.js"), "export const helper = () => 42;\n");
+
+    const withExcerpts = await buildGitReviewContext(directory, {
+      baseRef: await getGitHead(directory),
+      maxBytes: 16 * 1024,
+      hint: "helper",
+      includeUntracked: true,
+    });
+
+    assert.match(withExcerpts, /# Untracked files \(bounded excerpts\)/);
+    assert.match(withExcerpts, /## new-helper\.js/);
+    assert.match(withExcerpts, /export const helper/);
+    // Tracked-but-unmodified files must not leak into the untracked section.
+    assert.doesNotMatch(withExcerpts, /## README\.md/);
+
+    const withoutExcerpts = await buildGitReviewContext(directory, {
+      baseRef: await getGitHead(directory),
+      maxBytes: 16 * 1024,
+      hint: "helper",
+    });
+    assert.doesNotMatch(withoutExcerpts, /# Untracked files/);
+    assert.doesNotMatch(withoutExcerpts, /export const helper/);
+  });
+});
+
+test("untracked excerpts omit secret-like and gitignored files", async () => {
+  await withTempDir(async (directory) => {
+    await initRepo(directory);
+    await writeFile(join(directory, ".gitignore"), "ignored.log\n.env.local\n");
+    await writeFile(join(directory, "app.js"), "export const app = 1;\n");
+    await run("git", ["add", "."], directory);
+    await run("git", ["commit", "-m", "init"], directory);
+
+    await writeFile(join(directory, "app.js"), "export const app = 2;\n");
+    await writeFile(join(directory, "new-code.js"), "// brand new\n");
+    await writeFile(join(directory, ".env.local"), "TOKEN=leaked\n");
+    await writeFile(join(directory, "api-credentials.txt"), "user:password\n");
+    await writeFile(join(directory, "ignored.log"), "noise\n");
+
+    const context = await buildUntrackedFileContext(directory, {
+      maxBytes: 8 * 1024,
+      hint: "new-code",
+    });
+
+    assert.match(context.text, /## new-code\.js/);
+    assert.equal(context.listedFiles.includes(".env.local"), false);
+    assert.equal(context.listedFiles.includes("api-credentials.txt"), false);
+    assert.equal(context.listedFiles.includes("ignored.log"), false);
+    assert.doesNotMatch(context.text, /leaked/);
+    assert.doesNotMatch(context.text, /user:password/);
+  });
+});
+
+test("untracked excerpts clip oversized files and honor the byte budget", async () => {
+  await withTempDir(async (directory) => {
+    await initRepo(directory);
+    await writeFile(join(directory, "big-new.js"), `// ${"x".repeat(4000)}\n`);
+    await writeFile(join(directory, "small-new.js"), "// tiny\n");
+
+    const clipped = await buildUntrackedFileContext(directory, {
+      maxBytes: 16 * 1024,
+      maxFileBytes: 1024,
+      hint: "",
+    });
+    assert.match(clipped.text, /\[truncated\]/);
+
+    const budgeted = await buildUntrackedFileContext(directory, {
+      maxBytes: 1024,
+      maxFileBytes: 4096,
+      hint: "small",
+    });
+    assert.match(budgeted.text, /## small-new\.js/);
+    assert.equal(budgeted.truncated, true);
+
+    const disabled = await buildUntrackedFileContext(directory, { maxBytes: 0 });
+    assert.equal(disabled.text, "");
+    assert.deepEqual(disabled.includedFiles, []);
+  });
+});
+
+test("untracked excerpt budget is bounded by the review maxBytes", async () => {
+  await withTempDir(async (directory) => {
+    await initRepo(directory);
+    await writeFile(join(directory, "tracked.js"), "const a = 1;\n");
+    await run("git", ["add", "."], directory);
+    await run("git", ["commit", "-m", "init"], directory);
+    await writeFile(join(directory, "big-new.js"), `// ${"x".repeat(9000)}\n`);
+
+    const context = await buildGitReviewContext(directory, {
+      baseRef: await getGitHead(directory),
+      maxBytes: 4096,
+      includeUntracked: true,
+    });
+
+    // The whole review context must stay within the caller's budget even with
+    // excerpts enabled: at most a small slack for section framing.
+    assert.ok(
+      Buffer.byteLength(context, "utf8") <= 4096 + 512,
+      `context exceeded budget: ${Buffer.byteLength(context, "utf8")} bytes`
+    );
+  });
 });

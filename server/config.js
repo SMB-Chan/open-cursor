@@ -94,12 +94,18 @@ function validateRawConfig(raw) {
   integer(execution.killGraceMs, "execution.killGraceMs", 100);
   integer(execution.maxBodyBytes, "execution.maxBodyBytes", 1024);
   integer(execution.maxOutputBytes, "execution.maxOutputBytes", 1024);
+  if (!["off", "auto", "bubblewrap"].includes(execution.reviewerSandbox)) {
+    throw new RuntimeConfigError(
+      "execution.reviewerSandbox must be one of: off, auto, bubblewrap"
+    );
+  }
 
   const context = raw.context || {};
   integer(context.maxFiles, "context.maxFiles", 10, 5000);
   integer(context.maxBytes, "context.maxBytes", 4096, 2 * 1024 * 1024);
   integer(context.maxFileBytes, "context.maxFileBytes", 1024, 256 * 1024);
   integer(context.diffMaxBytes, "context.diffMaxBytes", 4096, 2 * 1024 * 1024);
+  integer(context.untrackedMaxBytes, "context.untrackedMaxBytes", 0, 1024 * 1024);
   if (context.omitSecretLikePaths !== true) {
     throw new RuntimeConfigError("context.omitSecretLikePaths must remain true");
   }
@@ -111,6 +117,7 @@ function validateRawConfig(raw) {
     ["plan", "implement", "review", "refine"],
     "collaboration.collaborative"
   );
+  integer(collaboration.maxReviewCycles, "collaboration.maxReviewCycles", 1, 4);
   if (collaboration.workspaceWriter !== "codex") {
     throw new RuntimeConfigError("collaboration.workspaceWriter must be codex");
   }
@@ -160,6 +167,14 @@ function validateRawConfig(raw) {
   return raw;
 }
 
+function parseReviewerSandboxEnv(env, overrides, fallback) {
+  const raw = envString(env, "BRIDGE_REVIEWER_SANDBOX", fallback, overrides);
+  if (!["off", "auto", "bubblewrap"].includes(raw)) {
+    throw new RuntimeConfigError("BRIDGE_REVIEWER_SANDBOX must be one of: off, auto, bubblewrap");
+  }
+  return raw;
+}
+
 function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = DEFAULT_CONFIG_PATH) {
   validateRawConfig(raw);
   const overrides = [];
@@ -203,6 +218,7 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
       Number.MAX_SAFE_INTEGER,
       overrides
     ),
+    reviewerSandbox: parseReviewerSandboxEnv(env, overrides, raw.execution.reviewerSandbox),
   };
 
   const context = {
@@ -238,6 +254,14 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
       2 * 1024 * 1024,
       overrides
     ),
+    untrackedMaxBytes: envInteger(
+      env,
+      "BRIDGE_UNTRACKED_MAX_BYTES",
+      raw.context.untrackedMaxBytes,
+      0,
+      1024 * 1024,
+      overrides
+    ),
     omitSecretLikePaths: true,
   };
 
@@ -258,18 +282,30 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
     workspaceAccess: "none",
   };
 
+  // Built before the frozen result so environment-override bookkeeping for the
+  // review-loop bound is recorded in the same overrides list as every other knob.
+  const collaboration = {
+    pipeline: Object.freeze([...raw.collaboration.pipeline]),
+    collaborative: Object.freeze([...raw.collaboration.collaborative]),
+    reviewerWorkingDirectory: raw.collaboration.reviewerWorkingDirectory,
+    workspaceWriter: raw.collaboration.workspaceWriter,
+    maxReviewCycles: envInteger(
+      env,
+      "BRIDGE_MAX_REVIEW_CYCLES",
+      raw.collaboration.maxReviewCycles,
+      1,
+      4,
+      overrides
+    ),
+  };
+
   return Object.freeze({
     source,
     overrides: Object.freeze([...new Set(overrides)]),
     bridge: Object.freeze(bridge),
     execution: Object.freeze(execution),
     context: Object.freeze(context),
-    collaboration: Object.freeze({
-      pipeline: Object.freeze([...raw.collaboration.pipeline]),
-      collaborative: Object.freeze([...raw.collaboration.collaborative]),
-      reviewerWorkingDirectory: raw.collaboration.reviewerWorkingDirectory,
-      workspaceWriter: raw.collaboration.workspaceWriter,
-    }),
+    collaboration: Object.freeze(collaboration),
     agents: Object.freeze({
       codex: Object.freeze({ ...raw.agents.codex, binary: codexBinary }),
       antigravity: Object.freeze({ ...raw.agents.antigravity, binary: antigravityBinary }),
@@ -292,10 +328,12 @@ function applyRuntimeDefaultsToEnv(config, env = process.env) {
     BRIDGE_KILL_GRACE_MS: config.execution.killGraceMs,
     BRIDGE_MAX_BODY_BYTES: config.execution.maxBodyBytes,
     BRIDGE_MAX_OUTPUT_BYTES: config.execution.maxOutputBytes,
+    BRIDGE_REVIEWER_SANDBOX: config.execution.reviewerSandbox,
     BRIDGE_CONTEXT_MAX_FILES: config.context.maxFiles,
     BRIDGE_CONTEXT_MAX_BYTES: config.context.maxBytes,
     BRIDGE_CONTEXT_FILE_BYTES: config.context.maxFileBytes,
     BRIDGE_DIFF_MAX_BYTES: config.context.diffMaxBytes,
+    BRIDGE_UNTRACKED_MAX_BYTES: config.context.untrackedMaxBytes,
     CODEX_BIN: config.agents.codex.binary,
     AGY_BIN: config.agents.antigravity.binary,
     CODEX_ENABLED: config.agents.codex.enabled ? "1" : "0",
