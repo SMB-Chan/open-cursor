@@ -36,3 +36,6 @@ jobs:
       - name: Check extension source
         working-directory: extension
         run: npm run check
+
+      - name: Check reference configuration JSON
+        run: node -e 'const fs=require("fs"); for (const file of ["config/bridge.json","config/config.schema.json"]) JSON.parse(fs.readFileSync(file,"utf8"));'
