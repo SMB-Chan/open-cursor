@@ -1,7 +1,93 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { summarizeWorkspaceReceipt } = require("./receipt.js");
+const { pollExecutionReceipt, summarizeWorkspaceReceipt } = require("./receipt.js");
+
+function jsonResponse(status, receipt) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() {
+      return receipt === undefined ? {} : { receipt };
+    },
+  };
+}
+
+test("pollExecutionReceipt waits until a running receipt is finalized", async () => {
+  const responses = [
+    jsonResponse(200, { id: "chatcmpl-1", status: "running" }),
+    jsonResponse(200, { id: "chatcmpl-1", status: "cancelled" }),
+  ];
+  let calls = 0;
+
+  const receipt = await pollExecutionReceipt({
+    requestId: "chatcmpl-1",
+    bridgeUrl: "http://127.0.0.1:9876",
+    fetchFn: async () => responses[calls++],
+    sleepFn: async () => {},
+    attempts: 3,
+    delayMs: 0,
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(receipt.status, "cancelled");
+});
+
+test("pollExecutionReceipt retries 404 until receipt appears", async () => {
+  const responses = [
+    jsonResponse(404),
+    jsonResponse(200, { id: "chatcmpl-2", status: "completed" }),
+  ];
+  let calls = 0;
+
+  const receipt = await pollExecutionReceipt({
+    requestId: "chatcmpl-2",
+    bridgeUrl: "http://127.0.0.1:9876",
+    fetchFn: async () => responses[calls++],
+    sleepFn: async () => {},
+    attempts: 3,
+    delayMs: 0,
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(receipt.status, "completed");
+});
+
+test("pollExecutionReceipt stops on a non-retryable HTTP response", async () => {
+  let calls = 0;
+  const receipt = await pollExecutionReceipt({
+    requestId: "chatcmpl-3",
+    bridgeUrl: "http://127.0.0.1:9876",
+    fetchFn: async () => {
+      calls += 1;
+      return jsonResponse(403);
+    },
+    sleepFn: async () => {},
+    attempts: 4,
+    delayMs: 0,
+  });
+
+  assert.equal(receipt, null);
+  assert.equal(calls, 1);
+});
+
+test("pollExecutionReceipt returns null after only running receipts", async () => {
+  let calls = 0;
+  const receipt = await pollExecutionReceipt({
+    requestId: "chatcmpl-4",
+    bridgeUrl: "http://127.0.0.1:9876",
+    fetchFn: async () => {
+      calls += 1;
+      return jsonResponse(200, { id: "chatcmpl-4", status: "running" });
+    },
+    sleepFn: async () => {},
+    attempts: 2,
+    delayMs: 0,
+  });
+
+  assert.equal(receipt, null);
+  assert.equal(calls, 2);
+});
 
 test("summarizes newly dirty, committed, and pre-existing paths", () => {
   const summary = summarizeWorkspaceReceipt({
