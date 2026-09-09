@@ -36,7 +36,7 @@ test("remote bind requires explicit opt-in and a strong token", () => {
     /MOBILE_REMOTE_TRANSPORT/
   );
   assert.doesNotThrow(() =>
-    validateRuntimeBoundary({ host: "0.0.0.0", allowRemote: true, token: "a".repeat(64), transport: "tunnel" })
+    validateRuntimeBoundary({ host: "100.64.0.10", allowRemote: true, token: "a".repeat(64), transport: "tunnel" })
   );
 });
 
