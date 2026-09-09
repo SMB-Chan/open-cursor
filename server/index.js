@@ -49,6 +49,19 @@ const ROUTING_MODES = new Set([
   "autonomous",
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const REQUEST_ID_PATTERN = /^chatcmpl-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function resolveRequestId(rawRequestId) {
+  if (rawRequestId === undefined || rawRequestId === null || String(rawRequestId).trim() === "") {
+    return `chatcmpl-${randomUUID()}`;
+  }
+
+  const value = String(rawRequestId).trim();
+  if (!REQUEST_ID_PATTERN.test(value)) {
+    throw new HttpError(400, "X-Open-Cursor-Request-Id must use chatcmpl-<UUID> format");
+  }
+  return value;
+}
 
 function parseAgentSelection(modelName, headerMode) {
   const requestedModel = typeof modelName === "string" ? modelName.trim() : "";
@@ -345,7 +358,7 @@ async function handleChat(req, res) {
   const effectiveMode = selection.mode || taskInfo.routing;
   assertAgentsEnabled(effectiveMode);
 
-  const requestId = `chatcmpl-${randomUUID()}`;
+  const requestId = resolveRequestId(req.headers["x-open-cursor-request-id"]);
   const journal = shouldJournalWorkspace(selection.mode, taskInfo)
     ? await startWorkspaceReceipt(cwd, {
         id: requestId,
@@ -727,6 +740,7 @@ export {
   parseAgentSelection,
   rejectBrowserOrigin,
   requiredAgentsForMode,
+  resolveRequestId,
   resolveWorkspacePath,
   runProcess,
   server,

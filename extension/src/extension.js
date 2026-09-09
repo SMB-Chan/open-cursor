@@ -8,7 +8,7 @@ const { spawn, execSync } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
-const { randomBytes } = require("node:crypto");
+const { randomBytes, randomUUID } = require("node:crypto");
 const { consumeSse } = require("./sse.js");
 const { pollExecutionReceipt, summarizeWorkspaceReceipt } = require("./receipt.js");
 
@@ -275,7 +275,7 @@ async function fetchExecutionReceipt(requestId, options = {}) {
   });
 }
 
-async function streamMessage(context, prompt, mode, signal, onEvent, onStarted) {
+async function streamMessage(context, prompt, mode, signal, onEvent, onStarted, preferredRequestId) {
   await ensureBridge(context);
 
   const selectedMode = mode || config().get("defaultAgent", "collaborative");
@@ -286,6 +286,7 @@ async function streamMessage(context, prompt, mode, signal, onEvent, onStarted) 
       "Content-Type": "application/json",
       "X-Workspace-Path": workspacePath(),
       "X-Agent-Mode": selectedMode,
+      ...(preferredRequestId ? { "X-Open-Cursor-Request-Id": preferredRequestId } : {}),
     },
     body: JSON.stringify({
       model: selectedMode,
@@ -294,7 +295,7 @@ async function streamMessage(context, prompt, mode, signal, onEvent, onStarted) 
     }),
   });
 
-  const bridgeRequestId = response.headers.get("x-open-cursor-request-id");
+  const bridgeRequestId = response.headers.get("x-open-cursor-request-id") || preferredRequestId || null;
   if (bridgeRequestId) onStarted?.(bridgeRequestId);
 
   if (!response.ok) {
@@ -368,7 +369,11 @@ function registerChatCommand(context) {
       if (msg.type !== "send" || typeof msg.text !== "string" || currentRequest) return;
 
       const controller = new AbortController();
-      const requestState = { id: msg.requestId, controller, bridgeRequestId: null };
+      const requestState = {
+        id: msg.requestId,
+        controller,
+        bridgeRequestId: `chatcmpl-${randomUUID()}`,
+      };
       currentRequest = requestState;
       activeRequests.add(controller);
       panel.webview.postMessage({
@@ -394,7 +399,8 @@ function registerChatCommand(context) {
             }),
           (bridgeRequestId) => {
             requestState.bridgeRequestId = bridgeRequestId;
-          }
+          },
+          requestState.bridgeRequestId
         );
         if (!controller.signal.aborted) {
           panel.webview.postMessage({
