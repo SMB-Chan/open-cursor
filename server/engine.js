@@ -11,6 +11,13 @@ import {
   getGitHead,
   withIsolatedDirectory,
 } from "./context.js";
+import {
+  MODEL_CACHE_TTL_MS,
+  createAntigravityStreamParser,
+  isStructuredOutputUnsupported,
+  parseAntigravityModels,
+  resolveAntigravityModel,
+} from "./antigravity.js";
 
 const VERSION = "2.3.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
@@ -21,6 +28,7 @@ const GEMINI_HOME = join(homedir(), ".gemini");
 const MAX_OUTPUT_BYTES = envInt("BRIDGE_MAX_OUTPUT_BYTES", 8 * 1024 * 1024, 1024);
 const AGENT_TIMEOUT_MS = envInt("BRIDGE_AGENT_TIMEOUT_MS", 10 * 60 * 1000, 1000);
 const KILL_GRACE_MS = envInt("BRIDGE_KILL_GRACE_MS", 1500, 100);
+const AGY_MODEL_DISCOVERY_TIMEOUT_MS = 5000;
 
 function envInt(name, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
   const raw = process.env[name];
@@ -83,6 +91,11 @@ const AGENTS = {
 };
 
 const activeProcesses = new Map();
+let antigravityModelCache = {
+  models: [],
+  expiresAt: 0,
+  discoveredAt: 0,
+};
 
 async function getCodexModel() {
   try {
@@ -216,7 +229,7 @@ function runProcess({
         settle(rejectPromise, new ExecutionAbortedError("Agent execution cancelled"));
         return;
       }
-      if (timedOut) {
+      if (timOut) {
         settle(rejectPromise, new ExecutionTimeoutError(timeoutMs));
         return;
       }
@@ -229,9 +242,15 @@ function runProcess({
       }
 
       const raw = stdout.trim() || stderr.trim();
-      const content = transformContent
-        ? transformContent(raw, { stdout, stderr, code, signal: signalCode })
-        : raw;
+      let content = raw;
+      if (transformContent) {
+        try {
+          content = transformContent(raw, { stdout, stderr, code, signal: signalCode });
+        } catch (error) {
+          settle(rejectPromise, error);
+          return;
+        }
+      }
 
       settle(resolvePromise, {
         content,
@@ -270,38 +289,143 @@ function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
   });
 }
 
-function mapAntigravityModel(model) {
-  if (!model) return undefined;
-  const lower = model.toLowerCase();
-  if (lower === "pro") return "Gemini 3.1 Pro (High)";
-  if (lower === "flash") return "Gemini 3.8 Flash (High)";
-  if (lower === "flash_lite" || lower === "flash-lite") return "Gemini 3.8 Flash (Low)";
-  return model;
+function antigravityEnvironment(home) {
+  const actualHome = home || process.env.HOME;
+  return {
+    ...process.env,
+    HOME: actualHome,
+    GEMINI_HOME,
+  };
 }
 
-function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
-  const args = [`-p=${prompt}`, "--output-format", "text", "--dangerously-skip-permissions"];
-  const targetModel = mapAntigravityModel(model);
-  if (targetModel) args.push("--model", targetModel);
+async function getAntigravityModels({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && antigravityModelCache.models.length > 0 && now < antigravityModelCache.expiresAt) {
+    return antigravityModelCache.models;
+  }
 
+  let result;
+  try {
+    result = await runProcess({
+      agent: "antigravity-models",
+      command: AGY_BIN,
+      args: ["models"],
+      cwd: homedir(),
+      env: antigravityEnvironment(process.env.HOME),
+      timeoutMs: AGY_MODEL_DISCOVERY_TIMEOUT_MS,
+    });
+  } catch {
+    return antigravityModelCache.models;
+  }
+
+  if (result.code === 0) {
+    const models = parseAntigravityModels(result.stdout);
+    if (models.length > 0) {
+      antigravityModelCache = {
+        models,
+        discoveredAt: now,
+        expiresAt: now + MODEL_CACHE_TTL_MS,
+      };
+      return models;
+    }
+  }
+
+  return antigravityModelCache.models;
+}
+
+async function resolveRequestedAntigravityModel(model) {
+  if (!model) return undefined;
+  const models = await getAntigravityModels();
+  return resolveAntigravityModel(model, models);
+}
+
+function antigravityArgs(prompt, targetModel, outputFormat) {
+  const args = [`-p=${prompt}`];
+  if (outputFormat) args.push("--output-format", outputFormat);
+  args.push("--dangerously-skip-permissions");
+  if (targetModel) args.push("--model", targetModel);
+  return args;
+}
+
+async function runAntigravityText(prompt, { cwd, targetModel, signal, onChunk, home } = {}) {
   const actualCwd = cwd || process.cwd();
   return runProcess({
     agent: "antigravity",
     command: AGY_BIN,
-    args,
+    args: antigravityArgs(prompt, targetModel),
     cwd: actualCwd,
     signal,
     onStdout: onChunk,
     env: {
-      ...process.env,
-      HOME: home || process.env.HOME,
+      ...antigravityEnvironment(home),
       PWD: actualCwd,
       OLDPWD: "",
       INIT_CWD: "",
       VSCODE_CWD: "",
-      GEMINI_HOME,
     },
   });
+}
+
+async function runAntigravity(prompt, { cwd, model, signal, onChunk, home } = {}) {
+  const actualCwd = cwd || process.cwd();
+  const targetModel = await resolveRequestedAntigravityModel(model);
+  let streamSummary = null;
+  const parser = createAntigravityStreamParser({ onText: onChunk });
+
+  const result = await runProcess({
+    agent: "antigravity",
+    command: AGY_BIN,
+    args: antigravityArgs(prompt, targetModel, "stream-json"),
+    cwd: actualCwd,
+    signal,
+    onStdout: (text) => parser.feed(text),
+    env: {
+      ...antigravityEnvironment(home),
+      PWD: actualCwd,
+      OLDPWD: "",
+      INIT_CWD: "",
+      VSCODE_CWD: "",
+    },
+    transformContent: (raw) => {
+      streamSummary = parser.finish();
+      return streamSummary.response || raw;
+    },
+  });
+
+  result.antigravity = streamSummary || parser.snapshot();
+
+  if (
+    isStructuredOutputUnsupported(result) &&
+    !result.antigravity.streamedText &&
+    !signal?.aborted
+  ) {
+    return runAntigravityText(prompt, {
+      cwd: actualCwd,
+      targetModel,
+      signal,
+      onChunk,
+      home,
+    });
+  }
+
+  if (result.code === 0 && !result.antigravity.resultSeen) {
+    const plain = result.stdout.trim();
+    if (plain && !result.antigravity.streamedText) onChunk?.(plain);
+    if (plain) result.content = plain;
+  }
+
+  if (
+    result.code === 0 &&
+    result.antigravity.resultSeen &&
+    result.antigravity.status &&
+    result.antigravity.status !== "SUCCESS"
+  ) {
+    result.code = 1;
+    const detail = result.antigravity.error || `Antigravity result status: ${result.antigravity.status}`;
+    result.stderr = [result.stderr, detail].filter(Boolean).join("\n");
+  }
+
+  return result;
 }
 
 function runAntigravityDetached(prompt, { model = "pro", signal, onChunk } = {}) {
@@ -676,6 +800,7 @@ export {
   buildReviewPrompt,
   executionConfig,
   formatCollaborativeResult,
+  getAntigravityModels,
   getCodexModel,
   orchestrate,
   runProcess,
