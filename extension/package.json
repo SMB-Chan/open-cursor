@@ -1,8 +1,8 @@
 {
   "name": "open-cursor-bridge",
   "displayName": "Open-Cursor Multi-Agent Bridge",
-  "description": "課金なしのマルチLLM協調コーディング — Codex + Antigravity",
-  "version": "2.3.0",
+  "description": "Codex + Antigravity + optional MiMo multi-agent coding bridge with execution receipts",
+  "version": "2.4.0",
   "publisher": "open-cursor",
   "engines": {
     "vscode": "^1.80.0"
@@ -35,7 +35,7 @@
       },
       {
         "command": "openCursor.selectAgent",
-        "title": "Open-Cursor: Select Agent (Codex/Antigravity/Collaborative)"
+        "title": "Open-Cursor: Select Agent Routing Mode"
       },
       {
         "command": "openCursor.chat",
@@ -72,13 +72,17 @@
         "openCursor.defaultAgent": {
           "type": "string",
           "enum": [
+            "auto",
+            "autonomous",
             "collaborative",
             "pipeline",
+            "mimo-gemini",
+            "mimo",
             "codex",
             "antigravity"
           ],
           "default": "collaborative",
-          "description": "Default agent routing mode. Collaborative uses Plan → Implement → Review → Refine; Pipeline uses Plan → Implement."
+          "description": "Default agent routing mode. Auto is side-effect-aware; Autonomous explicitly enables auto-approved Gemini edits/commands."
         },
         "openCursor.workspacePath": {
           "type": "string",
@@ -89,7 +93,7 @@
     }
   },
   "scripts": {
-    "check": "node --check src/extension.js && node --check src/sse.js && node --check src/sse.test.js",
-    "test": "node --test src/sse.test.js"
+    "check": "node --check src/extension.js && node --check src/sse.js && node --check src/receipt.js && node --check src/sse.test.js && node --check src/receipt.test.js",
+    "test": "node --test src/sse.test.js src/receipt.test.js"
   }
 }

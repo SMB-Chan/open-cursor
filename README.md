@@ -118,7 +118,7 @@ Open-Cursor: Chat with Agents
 Open-Cursor: Start Bridge Server
 Open-Cursor: Stop Managed Bridge Server
 Open-Cursor: Show Agent Status
-Open-Cursor: Select Agent (Codex/Antigravity/Collaborative)
+Open-Cursor: Select Agent Routing Mode
 ```
 
 Manual launch remains available:
@@ -177,6 +177,20 @@ The Cursor chat UI renders that metadata independently from the answer body. Col
 The extension's **Stop** action aborts its fetch. The bridge propagates the disconnect/abort to all child processes owned by that request, sends `SIGTERM`, and escalates to `SIGKILL` after the grace period when necessary.
 
 A single `chatcmpl-*` ID is retained for the entire stream and is also exposed as `X-Open-Cursor-Request-Id`.
+
+### Workspace execution receipts
+
+Write-capable requests record a bounded, non-destructive Git receipt before and after execution. The receipt distinguishes newly dirty paths, pre-existing dirty paths, paths that became clean, HEAD changes, and files committed during the request. Secret-like paths are omitted from the public receipt.
+
+Receipts never automatically stash, reset, or roll back the workspace. They are observations, not proof that the agent alone caused every observed change.
+
+Successful and failed streaming runs include the receipt in final `open_cursor.workspace_receipt` metadata. If the client disconnects or **Stop** aborts the stream, the extension retains `X-Open-Cursor-Request-Id` and retrieves the finalized receipt from:
+
+```text
+GET /v1/execution-receipts/<chatcmpl-id>
+```
+
+Receipts are held only in bounded bridge memory (maximum 100 entries, one-hour TTL) and are not persisted to disk.
 
 ## Runtime configuration
 
