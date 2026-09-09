@@ -27,6 +27,55 @@ test("planning prompt treats repository context as untrusted detached data", () 
   assert.match(prompt, /src\/parser\.js/);
 });
 
+test("plan prompt enforces a structured output contract the next agent can parse", () => {
+  const prompt = buildPlanPrompt("Fix the parser", "# Workspace map\n- src/parser.js");
+
+  assert.match(prompt, /## Target files/);
+  assert.match(prompt, /## Steps/);
+  assert.match(prompt, /## Tests to run/);
+  assert.match(prompt, /## Risks/);
+  assert.match(prompt, /the next agent parses this/);
+});
+
+test("implementation prompt requires a parseable ## Report section", () => {
+  const prompt = buildImplementationPrompt(
+    "Implement the fix",
+    "## Target files\n- src/parser.js",
+    "# Git status\n M src/local-change.js"
+  );
+
+  assert.match(prompt, /"## Report"/);
+  assert.match(prompt, /Files changed: <path>/);
+  assert.match(prompt, /Commands run: <command>/);
+  assert.match(prompt, /Deviations/);
+});
+
+test("review prompt requires verdict + numbered findings for the refiner", () => {
+  const prompt = buildReviewPrompt(
+    "Implement the fix",
+    "Plan text",
+    "## Report\n- Files changed: src/app.js",
+    "Before state",
+    "Current diff",
+    "Current workspace snapshot"
+  );
+
+  assert.match(prompt, /## Verdict/);
+  assert.match(prompt, /## Findings/);
+  assert.match(prompt, /most-severe first/);
+});
+
+test("refinement prompt requires a parseable ## Refinement Report", () => {
+  const prompt = buildRefinementPrompt(
+    "Implement the fix",
+    "## Findings\n1. src/app.js:12 — missing null guard — add guard",
+    "# Changes\n..."
+  );
+
+  assert.match(prompt, /"## Refinement Report"/);
+  assert.match(prompt, /Final checks/);
+});
+
 test("implementation prompt preserves user work and forbids unsolicited commits", () => {
   const prompt = buildImplementationPrompt(
     "Implement the fix",

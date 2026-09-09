@@ -14,7 +14,7 @@ import {
 import { compressHandoff, safePromptArg } from "./compressor.js";
 import { updateExecutionState } from "./monitor.js";
 
-const VERSION = "2.5.0";
+const VERSION = "2.6.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");
@@ -464,7 +464,14 @@ function untrustedContextPreamble() {
 function buildPlanPrompt(task, workspaceContext) {
   return `${untrustedContextPreamble()}\n\n` +
     `Produce a concise, actionable implementation plan. Identify likely files, invariants, failure modes, tests, and risks. ` +
-    `Do not claim you changed files.\n\n# Task\n${task}\n\n${workspaceContext}`;
+    `Do not claim you changed files.\n\n` +
+    `# Output format (follow exactly; the next agent parses this)\n` +
+    `## Target files\n- <path> — <one-line purpose>\n\n` +
+    `## Steps\n1. <terse, ordered implementation step>\n\n` +
+    `## Tests to run\n- <command or check>\n\n` +
+    `## Risks\n- <invariant or failure mode to preserve>\n\n` +
+    `Keep it under 600 words. Do not paste file contents.\n\n` +
+    `# Task\n${task}\n\n${workspaceContext}`;
 }
 
 function buildImplementationPrompt(task, plan, initialGitState) {
@@ -474,6 +481,14 @@ function buildImplementationPrompt(task, plan, initialGitState) {
     "Preserve pre-existing user changes and do not revert unrelated work.",
     "Do not run git commit unless the original task explicitly asks for a commit.",
     "Run appropriate focused checks/tests after editing when feasible.",
+    "",
+    "# Output format",
+    'End your response with a "## Report" section so the reviewer can parse it:',
+    "## Report",
+    "- Files changed: <path> — <add|modify|delete> — <one-line reason> (one line per path)",
+    "- Commands run: <command> — <pass|fail + short result>",
+    "- Deviations: <any deviation from the plan, or 'none'>",
+    "Do not paste whole files into the report.",
     "",
     "# Original task",
     task,
@@ -491,6 +506,14 @@ function buildReviewPrompt(task, plan, implementation, initialGitState, currentG
     untrustedContextPreamble(),
     "Review the implementation for correctness, regressions, security, missing tests, and whether the original task is actually satisfied.",
     "Focus on concrete defects and actionable corrections. Do not modify files and do not invent changes that are not present in the supplied context.",
+    "",
+    "# Output format (the refiner parses this)",
+    "## Verdict",
+    "approve | fix-required",
+    "",
+    "## Findings",
+    "1. <file>:<line or symbol> — <issue> — <concrete fix>",
+    "Number findings most-severe first; write only concrete, verifiable issues. If none, state that explicitly.",
     "",
     "# Original task",
     task,
@@ -518,6 +541,11 @@ function buildRefinementPrompt(task, review, currentGitState) {
     "Treat review comments as advisory: verify each point against the files before editing.",
     "Fix justified issues, keep correct existing work, preserve unrelated user changes, and do not run git commit unless the original task explicitly asks for it.",
     "Run focused checks/tests after the corrections when feasible.",
+    "",
+    "# Output format",
+    'End with a "## Refinement Report" so the result is parseable:',
+    "- <finding # or quote> — <fixed how | rejected, why>",
+    "- Final checks: <commands> — <pass|fail>",
     "",
     "# Original task",
     task,

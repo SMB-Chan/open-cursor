@@ -402,6 +402,12 @@ npm test
 
 CI also validates shell launcher syntax and configuration JSON syntax.
 
+## Working on this repository with LLM agents
+
+Open-Cursor is itself developed with the agents it orchestrates. `AGENTS.md` at the repository root is the single onboarding document for coding agents (Codex CLI reads `AGENTS.md` natively; `GEMINI.md` and `CLAUDE.md` are symlinks to it). It documents the repository map, hard sequencing/safety constraints, context budgets, verification commands, and the update flow.
+
+Inter-agent collaboration in collaborative mode uses structured output contracts: each stage prompt requires a parseable section (`## Target files`/`## Steps` from the planner, `## Report` from the implementer, `## Verdict` + numbered `## Findings` from the reviewer, `## Refinement Report` from the refiner). These sections are aligned with the handoff compression filters in `server/compressor.js`, so even over-budget handoffs keep the machine-parsable lines instead of losing them to truncation.
+
 ## Current direction
 
 The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model.

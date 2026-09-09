@@ -61,6 +61,41 @@ test("compressHandoff compresses implementation report while keeping tests and e
   assert.ok(compressed.includes("PASS"));
 });
 
+test("structured ## Report from the output contract survives implementation compression", () => {
+  const structured = [
+    "Made the changes.",
+    "```js",
+    "const blob = '".repeat(200) + "';",
+    "```",
+    "## Report",
+    "- Files changed: server/engine.js — modify — added guard",
+    "- Commands run: npm test — pass 69/69",
+    "- Deviations: none",
+  ].join("\n");
+
+  const compressed = compressHandoff(structured, { phase: "implementation", maxBytes: 400 });
+  assert.ok(compressed.includes("## Report"));
+  assert.ok(compressed.includes("Files changed: server/engine.js"));
+  assert.ok(compressed.includes("npm test"));
+});
+
+test("structured numbered findings survive review compression for the refiner", () => {
+  const findings = [
+    "## Verdict",
+    "fix-required",
+    "",
+    "## Findings",
+    "1. src/app.js:12 — missing null guard — add guard",
+    "2. src/app.js:40 — swallowed error — rethrow with context",
+    "",
+    "Prose explanation ".repeat(60),
+  ].join("\n");
+
+  const compressed = compressHandoff(findings, { phase: "review", maxBytes: 300 });
+  assert.ok(compressed.includes("1. src/app.js:12"));
+  assert.ok(compressed.includes("2. src/app.js:40"));
+});
+
 test("compressGitDiff ignores lockfiles and truncates massive hunks", () => {
   const diff = [
     "diff --git a/package-lock.json b/package-lock.json",
