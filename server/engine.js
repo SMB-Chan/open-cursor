@@ -535,9 +535,20 @@ function emitHeader(onEvent, text, agent, phase) {
 
 function formatCollaborativeResult({ plan, implementation, review, refinement }) {
   return [
+    `> 📊 **【進捗 1/4】** \`[▰▰▱▱▱▱▱▱] 25%\` ── **計画・設計フェーズ (Gemini Pro)**\n` +
+    `> 💭 **【推論要約】** ワークスペース構造を分析し、変更対象ファイル・アーキテクチャ制約・実装計画を策定しました。\n\n` +
     `## Plan (Gemini/Antigravity)\n${clipText(plan, 64 * 1024)}`,
+
+    `> 💻 **【進捗 2/4】** \`[▰▰▰▰▱▱▱▱] 50%\` ── **自律実装フェーズ (OpenAI Codex)**\n` +
+    `> 🔨 **【推論要約】** 計画に基づき、コードの編集・作成およびテスト検証を自律実行しました。\n\n` +
     `## Implementation (Codex/GPT)\n${clipText(implementation, 64 * 1024)}`,
+
+    `> 🔍 **【進捗 3/4】** \`[▰▰▰▰▰▰▱▱] 75%\` ── **独立検査フェーズ (Gemini Pro)**\n` +
+    `> 🔎 **【推論要約】** 実装によるGit差分とテスト結果を読み取り専用の隔離環境で検査し、品質と安全性を検証しました。\n\n` +
     `## Review (Gemini/Antigravity)\n${clipText(review, 64 * 1024)}`,
+
+    `> ✨ **【進捗 4/4】** \`[▰▰▰▰▰▰▰▰] 100%\` ── **修正・仕上げフェーズ (OpenAI Codex)**\n` +
+    `> 🛠️ **【推論要約】** レビューで指摘された改善項目の反映と最終調整を実行しました。\n\n` +
     `## Refinement (Codex/GPT)\n${clipText(refinement, 64 * 1024)}`,
   ].join("\n\n---\n\n");
 }
@@ -616,7 +627,9 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
     case "autonomous": {
       emitHeader(
         onEvent,
-        "> 🚀 **自律エージェントモード (Autonomous / Auto-Approve)**: 手動承認なしでファイルの読み書き・コマンド実行を開始します\n\n",
+        "> 🚀 **自律エージェントモード (Autonomous / Auto-Approve)**\n" +
+        "> ─── 🔄 手動承認なしでファイルの読み書き・コマンド実行を自律処理します ───\n" +
+        "> 💭 **【推論要約】** 要求仕様を分析し、必要なツール（Web調査、スクリプト実行、ファイル生成）を自律実行中...\n\n",
         "autonomous",
         "start"
       );
@@ -640,6 +653,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
       emitHeader(
         onEvent,
+        "> 📊 **【進捗 1/2】** `[▰▰▰▰▱▱▱▱] 50%` ── **分析・設計フェーズ (Gemini Pro)**\n" +
+        "> 💭 **【推論要約】** ワークスペースコンテキストを分析し、最適な実装アプローチを策定中...\n\n" +
         "## Analysis (Gemini/Antigravity)\n",
         "antigravity",
         "analysis-header"
@@ -657,7 +672,9 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
       emitHeader(
         onEvent,
-        "\n\n## Implementation (Codex/GPT)\n",
+        "\n\n> 💻 **【進捗 2/2】** `[▰▰▰▰▰▰▰▰] 100%` ── **実装フェーズ (OpenAI Codex)**\n" +
+        "> 🔨 **【推論要約】** 分析結果に基づき、コードの編集とテスト検証を実行中...\n\n" +
+        "## Implementation (Codex/GPT)\n",
         "codex",
         "implementation-header"
       );
@@ -686,6 +703,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
         emitHeader(
           onEvent,
+          "> 📊 **【進捗 1/4】** `[▰▰▱▱▱▱▱▱] 25%` ── **計画・設計フェーズ (Gemini Pro)**\n" +
+          "> 💭 **【推論要約】** ワークスペース構造を分析し、変更対象ファイル・アーキテクチャ制約・実装計画を策定中...\n\n" +
           "## Plan (Gemini/Antigravity)\n",
           "antigravity",
           "planning-header"
@@ -703,7 +722,9 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
         emitHeader(
           onEvent,
-          "\n\n## Implementation (Codex/GPT)\n",
+          "\n\n> 💻 **【進捗 2/4】** `[▰▰▰▰▱▱▱▱] 50%` ── **自律実装フェーズ (OpenAI Codex)**\n" +
+          "> 🔨 **【推論要約】** 計画に基づき、コードの編集・作成およびテスト検証を自律実行中...\n\n" +
+          "## Implementation (Codex/GPT)\n",
           "codex",
           "implementation-header"
         );
@@ -729,7 +750,9 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
         emitHeader(
           onEvent,
-          "\n\n## Review (Gemini/Antigravity)\n",
+          "\n\n> 🔍 **【進捗 3/4】** `[▰▰▰▰▰▰▱▱] 75%` ── **独立検査フェーズ (Gemini Pro)**\n" +
+          "> 🔎 **【推論要約】** 実装によるGit差分とテスト結果を読み取り専用の隔離環境で検査し、品質と安全性を検証中...\n\n" +
+          "## Review (Gemini/Antigravity)\n",
           "antigravity",
           "review-header"
         );
@@ -756,7 +779,9 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
         emitHeader(
           onEvent,
-          "\n\n## Refinement (Codex/GPT)\n",
+          "\n\n> ✨ **【進捗 4/4】** `[▰▰▰▰▰▰▰▰] 100%` ── **修正・仕上げフェーズ (OpenAI Codex)**\n" +
+          "> 🛠️ **【推論要約】** レビューで指摘された改善項目の反映と最終調整を実行中...\n\n" +
+          "## Refinement (Codex/GPT)\n",
           "codex",
           "refinement-header"
         );
@@ -800,6 +825,8 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
       emitHeader(
         onEvent,
+        "> 📋 **【進捗 1/2】** `[▰▰▰▰▱▱▱▱] 50%` ── **計画・分析フェーズ (Gemini Pro)**\n" +
+        "> 💭 **【推論要約】** リポジトリ構造を分析し、解決ドラフトの計画を策定中...\n\n" +
         "## 📋 Gemini 計画・分析 (Planning)\n\n",
         "antigravity",
         "planning-header"
@@ -817,7 +844,9 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
 
       emitHeader(
         onEvent,
-        "\n\n---\n\n## 💻 MiMo 解決案 (Read-only Solution Draft)\n\n",
+        "\n\n---\n\n> 💻 **【進捗 2/2】** `[▰▰▰▰▰▰▰▰] 100%` ── **解決案生成フェーズ (Xiaomi MiMo)**\n" +
+        "> 💡 **【推論要約】** 計画に基づき、読み取り専用の解決ドラフトを作成中...\n\n" +
+        "## 💻 MiMo 解決案 (Read-only Solution Draft)\n\n",
         "mimo",
         "implementation-header"
       );

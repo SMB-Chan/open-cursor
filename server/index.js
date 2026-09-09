@@ -6,7 +6,7 @@
 
 import { createServer } from "node:http";
 import { stat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
@@ -111,8 +111,29 @@ function assertAgentsEnabled(mode) {
   }
 }
 
-async function resolveWorkspacePath(rawPath) {
-  let candidate = rawPath ? String(rawPath) : process.cwd();
+async function resolveWorkspacePath(rawPath, prompt = "") {
+  let candidate = rawPath ? String(rawPath) : null;
+  if (!candidate && process.env.OPEN_CURSOR_WORKSPACE) {
+    try {
+      const s = await stat(process.env.OPEN_CURSOR_WORKSPACE);
+      if (s.isDirectory()) candidate = process.env.OPEN_CURSOR_WORKSPACE;
+    } catch {}
+  }
+  if (!candidate && prompt) {
+    const match = prompt.match(/\/(?:home|Users)\/[^\s'"`,:;）)]+/);
+    if (match) {
+      try {
+        const potential = resolve(match[0]);
+        const s = await stat(potential);
+        if (s.isDirectory()) candidate = potential;
+        else if (s.isFile()) candidate = dirname(potential);
+      } catch {}
+    }
+  }
+  if (!candidate) {
+    candidate = process.cwd();
+  }
+
   try {
     candidate = decodeURIComponent(candidate);
   } catch {}
@@ -341,7 +362,7 @@ async function handleChat(req, res) {
   const body = await parseBody(req);
   const stream = body.stream === true;
   const fullPrompt = buildPrompt(body.messages || []);
-  const cwd = await resolveWorkspacePath(req.headers["x-workspace-path"]);
+  const cwd = await resolveWorkspacePath(req.headers["x-workspace-path"], fullPrompt);
   const selection = parseAgentSelection(body.model || "", req.headers["x-agent-mode"]);
   const effectiveMode = selection.mode || analyzeTask(fullPrompt).routing;
   assertAgentsEnabled(effectiveMode);

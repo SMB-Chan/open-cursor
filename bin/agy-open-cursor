@@ -190,14 +190,77 @@ function rewriteArgs(args, models, outputFormat = "stream-json") {
   return rewritten;
 }
 
+function formatToolSummary(toolName, params = {}) {
+  switch (toolName) {
+    case "search_web": {
+      const q = params.query ? String(params.query).replace(/["\\]/g, "") : "";
+      return { icon: "🌐", action: "Web調査", detail: q, reasoning: "最新情報・関連ドキュメントを検索中" };
+    }
+    case "read_url_content":
+    case "open_browser_url":
+    case "read_browser_page": {
+      const u = String(params.Url || params.url || "");
+      const short = u.length > 55 ? `${u.slice(0, 52)}...` : u;
+      return { icon: "🔗", action: "Webページ取得", detail: short, reasoning: "Webページの内容を取得・解析中" };
+    }
+    case "run_command": {
+      const cmd = String(params.CommandLine || params.command || "");
+      const short = cmd.length > 55 ? `${cmd.slice(0, 52)}...` : cmd;
+      return { icon: "💻", action: "コマンド実行", detail: short, reasoning: "スクリプトまたは検証コマンドを実行中" };
+    }
+    case "write_to_file": {
+      const f = params.TargetFile ? path.basename(params.TargetFile) : "ファイル";
+      return { icon: "📝", action: "ファイル作成", detail: f, reasoning: "ソースコード・成果物を書き込み中" };
+    }
+    case "replace_file_content":
+    case "multi_replace_file_content":
+    case "sed_file": {
+      const f = params.TargetFile ? path.basename(params.TargetFile) : "ファイル";
+      return { icon: "✏️", action: "コード編集", detail: f, reasoning: "既存ファイルを修正・更新中" };
+    }
+    case "view_file": {
+      const f = params.AbsolutePath ? path.basename(params.AbsolutePath) : "ファイル";
+      return { icon: "👁️", action: "ファイル確認", detail: f, reasoning: "ファイル内容を精査中" };
+    }
+    case "find_by_name": {
+      const p = String(params.Pattern || "*");
+      return { icon: "🔍", action: "ファイル検索", detail: p, reasoning: "対象ファイルの存在を探索中" };
+    }
+    case "grep_search": {
+      const q = String(params.Query || "");
+      return { icon: "🔎", action: "コード検索", detail: q, reasoning: "特定パターンのコード箇所を検索中" };
+    }
+    case "list_dir": {
+      const d = params.DirectoryPath ? path.basename(params.DirectoryPath) || params.DirectoryPath : "";
+      return { icon: "📁", action: "ディレクトリ確認", detail: d, reasoning: "ディレクトリ構造を確認中" };
+    }
+    case "invoke_subagent": {
+      return { icon: "🤖", action: "サブエージェント委譲", detail: "並列タスク", reasoning: "サブタスクを自律エージェントに委譲中" };
+    }
+    default:
+      return { icon: "⚙️", action: "自律ツール処理", detail: toolName || "処理実行", reasoning: "タスクに必要な自律操作を実行中" };
+  }
+}
+
+function renderStepProgressBar(stepCount) {
+  const percent = Math.min(95, 12 + (stepCount - 1) * 12);
+  const totalSlots = 8;
+  const filled = Math.min(totalSlots, Math.max(1, Math.round((percent / 100) * totalSlots)));
+  const empty = totalSlots - filled;
+  return `[${"▰".repeat(filled)}${"▱".repeat(empty)}] ${percent}%`;
+}
+
 function createStreamParser(onText) {
   let buffer = "";
   let streamedText = "";
+  let streamedModelResponse = "";
   let resultResponse = "";
   let resultStatus = null;
   let resultError = null;
   let resultSeen = false;
   let malformed = 0;
+  let toolStepCount = 0;
+  let hasCompletedBanner = false;
 
   const emit = (text) => {
     if (typeof text !== "string" || !text) return;
@@ -217,7 +280,39 @@ function createStreamParser(onText) {
     }
     if (event?.event === "step_update") {
       const update = event.step_update;
+
+      // Visual progress and reasoning summary for autonomous tool calls
+      if (update?.step_type === "tool") {
+        if (update.state === "ACTIVE") {
+          toolStepCount += 1;
+          const { icon, action, detail, reasoning } = formatToolSummary(
+            update.tool_name,
+            update.tool_info?.parameters
+          );
+          const bar = renderStepProgressBar(toolStepCount);
+          emit(
+            `\n> ${icon} **【Step ${toolStepCount}】** \`${bar}\` ── **${action}**: \`${detail}\`\n` +
+            `> 💭 *${reasoning}*\n`
+          );
+        } else if (update.state === "DONE") {
+          const dur =
+            typeof update.duration_seconds === "number"
+              ? update.duration_seconds.toFixed(1)
+              : null;
+          emit(dur !== null ? `> └─ ✓ 完了 (${dur}秒)\n\n` : "> └─ ✓ 完了\n\n");
+        }
+        return;
+      }
+
+      // Stream model response text deltas
       if (update?.step_type === "agent_response" && typeof update.text_delta === "string") {
+        if (toolStepCount > 0 && !hasCompletedBanner) {
+          hasCompletedBanner = true;
+          emit(
+            `\n---\n> 🎉 **【自律処理完了】** \`[▰▰▰▰▰▰▰▰] 100%\` ── 全 ${toolStepCount} ステップの自律処理が完了しました。回答を出力します：\n\n`
+          );
+        }
+        streamedModelResponse += update.text_delta;
         emit(update.text_delta);
       }
       return;
@@ -228,9 +323,21 @@ function createStreamParser(onText) {
       resultResponse = typeof result.response === "string" ? result.response : "";
       resultStatus = typeof result.status === "string" ? result.status : null;
       resultError = typeof result.error === "string" ? result.error : null;
-      if (resultResponse && !streamedText) emit(resultResponse);
-      else if (resultResponse.startsWith(streamedText) && resultResponse.length > streamedText.length) {
-        emit(resultResponse.slice(streamedText.length));
+
+      if (toolStepCount > 0 && !hasCompletedBanner && resultResponse) {
+        hasCompletedBanner = true;
+        emit(
+          `\n---\n> 🎉 **【自律処理完了】** \`[▰▰▰▰▰▰▰▰] 100%\` ── 全 ${toolStepCount} ステップの自律処理が完了しました。回答を出力します：\n\n`
+        );
+      }
+
+      if (resultResponse && !streamedModelResponse) {
+        emit(resultResponse);
+      } else if (
+        resultResponse.startsWith(streamedModelResponse) &&
+        resultResponse.length > streamedModelResponse.length
+      ) {
+        emit(resultResponse.slice(streamedModelResponse.length));
       }
     }
   };
@@ -255,6 +362,7 @@ function createStreamParser(onText) {
         error: resultError,
         resultSeen,
         malformed,
+        toolStepCount,
       };
     },
   };
@@ -365,9 +473,11 @@ module.exports = {
   classifyLegacyModel,
   createStreamParser,
   discoverModels,
+  formatToolSummary,
   locateModelArgument,
   main,
   parseModelList,
+  renderStepProgressBar,
   resolveModel,
   rewriteArgs,
   structuredUnsupported,

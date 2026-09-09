@@ -64,6 +64,7 @@ if ! is_bridge_running; then
     exit 1
   fi
   echo -e "${YELLOW}Starting bridge server...${NC}"
+  export OPEN_CURSOR_WORKSPACE="${OPEN_CURSOR_WORKSPACE:-$PWD}"
   cd "$BRIDGE_DIR/server"
   setsid "$NODE_BIN" index.js > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
