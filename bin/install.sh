@@ -180,16 +180,34 @@ echo ""
 echo -e "${YELLOW}[5/6] Linking Cursor extension (update-proof)...${NC}"
 
 mkdir -p "$CURSOR_EXT_DIR"
+rm -f "$CURSOR_EXT_DIR/.obsolete"
 
-if [ -L "$EXTENSION_LINK" ]; then
-  rm "$EXTENSION_LINK"
-elif [ -e "$EXTENSION_LINK" ]; then
-  echo -e "${RED}Extension path already exists and is not a symlink:${NC} $EXTENSION_LINK"
-  exit 1
+ln -sfn "$EXTENSION_SRC" "$EXTENSION_LINK"
+ln -sfn "$EXTENSION_SRC" "$CURSOR_EXT_DIR/open-cursor.open-cursor-bridge-2.2.0"
+
+# Register in extensions.json if exists
+if [ -f "$CURSOR_EXT_DIR/extensions.json" ]; then
+  python3 -c '
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+try:
+    data = json.loads(p.read_text())
+    data = [e for e in data if e.get("identifier", {}).get("id") != "open-cursor.open-cursor-bridge"]
+    data.append({
+        "identifier": {"id": "open-cursor.open-cursor-bridge"},
+        "version": "2.2.0",
+        "location": {"$mid": 1, "path": sys.argv[2], "scheme": "file"},
+        "relativeLocation": "open-cursor.open-cursor-bridge-2.2.0",
+        "metadata": {"installedTimestamp": 1788939000000, "pinned": True}
+    })
+    p.write_text(json.dumps(data, indent=2))
+except Exception:
+    pass
+' "$CURSOR_EXT_DIR/extensions.json" "$EXTENSION_SRC" 2>/dev/null || true
 fi
 
-ln -s "$EXTENSION_SRC" "$EXTENSION_LINK"
-echo -e "  ${GREEN}✓${NC} Extension symlinked: $EXTENSION_LINK → $EXTENSION_SRC"
+echo -e "  ${GREEN}✓${NC} Extension linked: $EXTENSION_LINK → $EXTENSION_SRC"
 echo -e "  ${CYAN}ℹ${NC} Extension source lives OUTSIDE Cursor's managed directories"
 
 # ── Step 6: Create desktop entry ─────────────────────────
