@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile, readdir, rm, stat, mkdtemp } from "node:fs/promises";
+import { open, readFile, readdir, rm, stat, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join, relative, sep } from "node:path";
 
@@ -8,6 +8,9 @@ const DEFAULT_CONTEXT_MAX_BYTES = 128 * 1024;
 const DEFAULT_CONTEXT_FILE_BYTES = 12 * 1024;
 const DEFAULT_DIFF_MAX_BYTES = 96 * 1024;
 const MAX_REVIEW_PATHS = 250;
+const DEFAULT_UNTRACKED_MAX_BYTES = 24 * 1024;
+const DEFAULT_UNTRACKED_FILE_BYTES = 8 * 1024;
+const MAX_UNTRACKED_FILES = 20;
 
 const IGNORED_DIRECTORIES = new Set([
   ".git",
@@ -104,6 +107,23 @@ function contextLimits(overrides = {}) {
       overrides.maxFileBytes ?? process.env.BRIDGE_CONTEXT_FILE_BYTES,
       DEFAULT_CONTEXT_FILE_BYTES,
       1024,
+      256 * 1024
+    ),
+  };
+}
+
+function untrackedLimits(overrides = {}) {
+  return {
+    maxBytes: boundedInteger(
+      overrides.maxBytes ?? process.env.BRIDGE_UNTRACKED_MAX_BYTES,
+      DEFAULT_UNTRACKED_MAX_BYTES,
+      0,
+      1024 * 1024
+    ),
+    maxFileBytes: boundedInteger(
+      overrides.maxFileBytes ?? process.env.BRIDGE_CONTEXT_FILE_BYTES,
+      DEFAULT_UNTRACKED_FILE_BYTES,
+      512,
       256 * 1024
     ),
   };
@@ -382,6 +402,85 @@ function sanitizedStatus(statusText) {
   return kept.join("\n");
 }
 
+// Reads at most maxFileBytes+1 bytes and never follows huge files into memory.
+// Returns null for unreadable or binary-looking content (NUL byte in the head).
+async function readTextHead(absolutePath, maxFileBytes) {
+  let handle;
+  try {
+    handle = await open(absolutePath, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) return null;
+    const wanted = Math.min(info.size, maxFileBytes + 1);
+    const buffer = Buffer.alloc(wanted);
+    const { bytesRead } = await handle.read(buffer, 0, wanted, 0);
+    const head = buffer.subarray(0, bytesRead);
+    if (head.includes(0)) return null;
+    if (bytesRead > maxFileBytes) {
+      return `${head.subarray(0, maxFileBytes).toString("utf8")}\n… [truncated]`;
+    }
+    return head.toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+/**
+ * Bounded excerpts for newly-created/untracked files.
+ *
+ * `git diff` cannot show files that were never tracked, so a reviewer that only
+ * receives diffs is blind to files an implementation agent just created. This
+ * lists untracked, non-gitignored files (secret-like paths are always omitted),
+ * ranks them against the task hint, and includes per-file bounded excerpts.
+ * An untracked budget of 0 disables the excerpt pass entirely.
+ */
+async function buildUntrackedFileContext(root, options = {}) {
+  const limits = untrackedLimits(options);
+  if (limits.maxBytes <= 0) {
+    return { text: "", includedFiles: [], listedFiles: [], truncated: false };
+  }
+
+  const listing = await captureCommand(
+    "git",
+    ["ls-files", "--others", "--exclude-standard", "-z"],
+    { cwd: root, maxBytes: 64 * 1024 }
+  );
+
+  const paths = parseNameOnly(listing.stdout)
+    .filter((path) => !isSecretPath(path))
+    .sort(
+      (a, b) =>
+        scoreContextFile(b, options.hint) - scoreContextFile(a, options.hint) ||
+        a.localeCompare(b)
+    )
+    .slice(0, MAX_UNTRACKED_FILES);
+
+  const parts = [];
+  const budget = { remaining: limits.maxBytes };
+  const includedFiles = [];
+
+  for (const path of paths) {
+    if (budget.remaining <= 256) break;
+    const content = await readTextHead(join(root, path), limits.maxFileBytes);
+    if (content === null) continue;
+    const block = `\n## ${path}\n\`\`\`\n${content}\n\`\`\`\n`;
+    if (!appendWithinBudget(parts, block, budget)) break;
+    includedFiles.push(path);
+  }
+
+  return {
+    text: parts.join(""),
+    includedFiles,
+    listedFiles: paths,
+    truncated: includedFiles.length < paths.length || budget.remaining <= 256,
+  };
+}
+
 async function buildGitReviewContext(root, options = {}) {
   const maxBytes = boundedInteger(
     options.maxBytes ?? process.env.BRIDGE_DIFF_MAX_BYTES,
@@ -390,7 +489,26 @@ async function buildGitReviewContext(root, options = {}) {
     2 * 1024 * 1024
   );
   const statusBudget = Math.min(16 * 1024, Math.floor(maxBytes / 4));
-  const diffBudget = maxBytes - statusBudget;
+
+  // Optional bounded excerpts for files git diff cannot represent (untracked
+  // new files). The section budget is capped by the runtime knob so operators
+  // can shrink or disable it (BRIDGE_UNTRACKED_MAX_BYTES=0) without losing the
+  // status/diff evidence.
+  let untrackedBudget = 0;
+  let untracked = null;
+  if (options.includeUntracked === true) {
+    untrackedBudget = Math.min(untrackedLimits(options).maxBytes, Math.floor(maxBytes / 4));
+    untrackedBudget = Math.max(0, Math.min(untrackedBudget, maxBytes - statusBudget));
+    if (untrackedBudget > 0) {
+      untracked = await buildUntrackedFileContext(root, {
+        hint: options.hint,
+        maxBytes: untrackedBudget,
+        maxFileBytes: untrackedLimits(options).maxFileBytes,
+      });
+    }
+  }
+
+  const diffBudget = Math.max(1024, maxBytes - statusBudget - untrackedBudget);
 
   const status = await captureCommand("git", ["status", "--short"], {
     cwd: root,
@@ -434,6 +552,14 @@ async function buildGitReviewContext(root, options = {}) {
       `# Changes${options.baseRef ? ` since ${options.baseRef.slice(0, 12)}` : ""}\n${diff.stdout.trim()}`
     );
   }
+  if (untracked && untracked.text.trim()) {
+    sections.push(`# Untracked files (bounded excerpts)\n${untracked.text.trim()}`);
+    if (untracked.truncated) {
+      sections.push(
+        "# Note\nSome new/untracked files were omitted to stay within the review budget."
+      );
+    }
+  }
   if (diff.truncated) {
     sections.push("# Note\nGit change context was truncated to the configured review budget.");
   }
@@ -452,6 +578,7 @@ async function withIsolatedDirectory(callback) {
 
 export {
   buildGitReviewContext,
+  buildUntrackedFileContext,
   buildWorkspaceContext,
   contextLimits,
   getGitHead,

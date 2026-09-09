@@ -76,7 +76,8 @@
         "maxBytes",
         "maxFileBytes",
         "diffMaxBytes",
-        "omitSecretLikePaths"
+        "omitSecretLikePaths",
+        "untrackedMaxBytes"
       ],
       "properties": {
         "maxFiles": {
@@ -101,6 +102,12 @@
         },
         "omitSecretLikePaths": {
           "const": true
+        },
+        "untrackedMaxBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576,
+          "description": "Cap for bounded excerpts of new/untracked files embedded into collaborative review context. 0 disables the excerpt pass; git status/diff evidence is unaffected."
         }
       }
     },

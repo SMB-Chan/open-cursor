@@ -16,7 +16,8 @@
     "maxBytes": 131072,
     "maxFileBytes": 12288,
     "diffMaxBytes": 98304,
-    "omitSecretLikePaths": true
+    "omitSecretLikePaths": true,
+    "untrackedMaxBytes": 24576
   },
   "collaboration": {
     "pipeline": [

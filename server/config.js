@@ -100,6 +100,7 @@ function validateRawConfig(raw) {
   integer(context.maxBytes, "context.maxBytes", 4096, 2 * 1024 * 1024);
   integer(context.maxFileBytes, "context.maxFileBytes", 1024, 256 * 1024);
   integer(context.diffMaxBytes, "context.diffMaxBytes", 4096, 2 * 1024 * 1024);
+  integer(context.untrackedMaxBytes, "context.untrackedMaxBytes", 0, 1024 * 1024);
   if (context.omitSecretLikePaths !== true) {
     throw new RuntimeConfigError("context.omitSecretLikePaths must remain true");
   }
@@ -239,6 +240,14 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
       2 * 1024 * 1024,
       overrides
     ),
+    untrackedMaxBytes: envInteger(
+      env,
+      "BRIDGE_UNTRACKED_MAX_BYTES",
+      raw.context.untrackedMaxBytes,
+      0,
+      1024 * 1024,
+      overrides
+    ),
     omitSecretLikePaths: true,
   };
 
@@ -309,6 +318,7 @@ function applyRuntimeDefaultsToEnv(config, env = process.env) {
     BRIDGE_CONTEXT_MAX_BYTES: config.context.maxBytes,
     BRIDGE_CONTEXT_FILE_BYTES: config.context.maxFileBytes,
     BRIDGE_DIFF_MAX_BYTES: config.context.diffMaxBytes,
+    BRIDGE_UNTRACKED_MAX_BYTES: config.context.untrackedMaxBytes,
     CODEX_BIN: config.agents.codex.binary,
     AGY_BIN: config.agents.antigravity.binary,
     CODEX_ENABLED: config.agents.codex.enabled ? "1" : "0",

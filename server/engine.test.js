@@ -68,6 +68,7 @@ test("review prompt requires an explicit parseable verdict marker", () => {
   assert.match(prompt, /VERDICT: CHANGES_REQUESTED/);
   assert.match(prompt, /Never mark APPROVED while a concrete defect/i);
   assert.match(prompt, /Review round 1/);
+  assert.match(prompt, /untracked new files/i);
   assert.doesNotMatch(prompt, /re-review after a refinement cycle/i);
 });
 

@@ -24,7 +24,7 @@ import {
   parseReviewVerdict,
 } from "./verdict.js";
 
-const VERSION = "2.5.0";
+const VERSION = "2.6.0";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");
@@ -502,6 +502,7 @@ function buildReviewPrompt(task, plan, implementation, initialGitState, currentG
     "Review the implementation for correctness, regressions, security, missing tests, and whether the original task is actually satisfied.",
     "Focus on concrete defects and actionable corrections. Do not modify files and do not invent changes that are not present in the supplied context.",
     "Do not request changes for purely stylistic preferences when the implementation is correct, safe, and satisfies the task.",
+    "The current changes include bounded excerpts for untracked new files. Review those files with the same rigor as tracked diffs: they are part of this implementation even though git diff cannot represent them.",
     "",
     "# Required verdict protocol",
     "End your review with exactly one final marker line and nothing after it:",
@@ -1026,7 +1027,12 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent, maxRevie
           const cycleStart = 40 + (cycle - 1) * segment;
 
           const [currentGitState, afterContext] = await Promise.all([
-            buildGitReviewContext(cwd, { baseRef: baselineHead, maxBytes: 48 * 1024 }),
+            buildGitReviewContext(cwd, {
+              baseRef: baselineHead,
+              maxBytes: 48 * 1024,
+              hint: prompt,
+              includeUntracked: true,
+            }),
             buildWorkspaceContext(cwd, {
               hint: prompt,
               maxBytes: 32 * 1024,
