@@ -34,14 +34,31 @@ export function sessionIdFromRun(runResult) {
 export const GOAL_COMPLETE_MARKER = "GOAL_COMPLETE";
 export const GOAL_BLOCKED_MARKER = "GOAL_BLOCKED";
 
-// The model must terminate every round with exactly one standalone status line;
-// only exact marker lines count, so inline mentions cannot fake completion.
+// The model must terminate every round with a status line. A status line is a
+// line whose trimmed content is the marker alone OR the marker followed by a
+// short explanation (models frequently append one despite instructions). The
+// LAST matching line wins; inline mentions mid-sentence never count because
+// the marker must be at line start.
+function markerKind(trimmedLine) {
+  if (!trimmedLine) return null;
+  if (trimmedLine === GOAL_COMPLETE_MARKER) return "complete";
+  if (trimmedLine === GOAL_BLOCKED_MARKER) return "blocked";
+  if (trimmedLine.startsWith(GOAL_COMPLETE_MARKER)) {
+    const next = trimmedLine[GOAL_COMPLETE_MARKER.length];
+    if (!/\w/.test(next || "")) return "complete";
+  }
+  if (trimmedLine.startsWith(GOAL_BLOCKED_MARKER)) {
+    const next = trimmedLine[GOAL_BLOCKED_MARKER.length];
+    if (!/\w/.test(next || "")) return "blocked";
+  }
+  return null;
+}
+
 function lastMarkerLine(content) {
   const lines = String(content || "").split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line === GOAL_COMPLETE_MARKER) return { marker: GOAL_COMPLETE_MARKER, index: i };
-    if (line === GOAL_BLOCKED_MARKER) return { marker: GOAL_BLOCKED_MARKER, index: i };
+    const kind = markerKind(lines[i].trim());
+    if (kind) return { kind, index: i };
   }
   return null;
 }
@@ -49,17 +66,14 @@ function lastMarkerLine(content) {
 export function parseGoalRoundStatus(content) {
   const found = lastMarkerLine(content);
   if (!found) return { status: "continue" };
-  if (found.marker === GOAL_COMPLETE_MARKER) return { status: "complete", marker: found.marker };
-  return { status: "blocked", marker: found.marker };
+  if (found.kind === "complete") return { status: "complete", marker: GOAL_COMPLETE_MARKER };
+  return { status: "blocked", marker: GOAL_BLOCKED_MARKER };
 }
 
 export function stripGoalMarker(content) {
   return String(content || "")
     .split("\n")
-    .filter((line) => {
-      const t = line.trim();
-      return t !== GOAL_COMPLETE_MARKER && t !== GOAL_BLOCKED_MARKER;
-    })
+    .filter((line) => markerKind(line.trim()) === null)
     .join("\n")
     .trim();
 }
@@ -76,10 +90,11 @@ export function buildGoalContract(goalPrompt, { maxRounds, round, threadId } = {
     "# Loop rules",
     "- Work autonomously: inspect, edit, run checks, and fix errors without asking for approval.",
     "- Do not run git commit unless the goal explicitly requires it.",
-    "- End EVERY response with exactly one status line and nothing after it:",
-    `  ${GOAL_COMPLETE_MARKER} — the goal is fully satisfied and verified`,
-    `  ${GOAL_BLOCKED_MARKER} — you cannot proceed (missing credentials, destructive action outside scope, etc.); explain why before the marker`,
-    "  any other ending — you will be resumed for the next round; end with a one-line plan for the next round",
+    "- Terminate EVERY response with a final status line, as the very last line:",
+    "  COMPLETE responses end with:            GOAL_COMPLETE",
+    "  BLOCKED responses end with:             GOAL_BLOCKED  (explain the blocker before that line)",
+    "  The status line may carry a short explanation after the marker.",
+    "  A response WITHOUT a final status line means you were interrupted; you will be resumed.",
     "",
     `Rounds used: ${round} of at most ${maxRounds}.`,
     threadId ? `Continuing existing Codex thread ${threadId}.` : "A new Codex thread will be recorded from this round.",

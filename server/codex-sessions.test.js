@@ -48,9 +48,24 @@ test("parseGoalRoundStatus takes the LAST marker and defaults to continue", () =
   assert.equal(parseGoalRoundStatus("no marker but mentions GOAL_COMPLETE_INLINE").status, "continue");
 });
 
-test("stripGoalMarker removes standalone status lines only", () => {
+test("models append explanations to the marker line; they still count", () => {
+  assert.equal(
+    parseGoalRoundStatus("verified the file\nGOAL_COMPLETE — the goal is fully satisfied and verified").status,
+    "complete"
+  );
+  assert.equal(
+    parseGoalRoundStatus("missing credentials\nGOAL_BLOCKED — cannot proceed").status,
+    "blocked"
+  );
+  assert.equal(
+    parseGoalRoundStatus("work done\nGOAL_COMPLETE — verified\nchatter\nGOAL_COMPLETE — final").status,
+    "complete"
+  );
+});
+
+test("stripGoalMarker removes status lines only", () => {
   assert.equal(stripGoalMarker("report body\nGOAL_COMPLETE"), "report body");
-  assert.equal(stripGoalMarker("GOAL_BLOCKED\nreason explained"), "reason explained");
+  assert.equal(stripGoalMarker("reason explained\nGOAL_BLOCKED — cannot proceed"), "reason explained");
   assert.equal(stripGoalMarker("keep GOAL_COMPLETE inline"), "keep GOAL_COMPLETE inline");
   assert.equal(stripGoalMarker("GOAL_COMPLETE"), "");
 });
