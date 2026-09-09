@@ -39,6 +39,7 @@ const ROUTING_MODES = new Set([
   "pipeline",
   "mimo",
   "mimo-gemini",
+  "auto",
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -411,7 +412,14 @@ async function handleModels(req, res) {
   const antigravity = await agentStatus("antigravity");
   const mimo = await agentStatus("mimo");
 
-  const models = [];
+  const models = [
+    {
+      id: "auto",
+      object: "model",
+      owned_by: "bridge",
+      description: "Auto (自動判別: プロンプト内容から Gemini / MiMo / 協調モードを最適自動選択)",
+    },
+  ];
 
   if (mimo.available && antigravity.available) {
     models.push({

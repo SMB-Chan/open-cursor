@@ -474,10 +474,13 @@ function getChatHTML(webview) {
   <div id="messages" aria-live="polite"></div>
   <div id="input-area">
     <select id="mode" aria-label="Agent routing mode">
-      <option value="collaborative">Collaborative</option>
+      <option value="auto">Auto (自動判別)</option>
+      <option value="mimo-gemini">MiMo + Gemini</option>
+      <option value="collaborative">Collaborative (Codex + Gemini)</option>
       <option value="pipeline">Pipeline</option>
+      <option value="mimo">MiMo</option>
+      <option value="antigravity">Antigravity (Gemini)</option>
       <option value="codex">Codex</option>
-      <option value="antigravity">Antigravity</option>
     </select>
     <textarea id="input" placeholder="Ask anything…  Shift+Enter for a new line" aria-label="Message"></textarea>
     <div id="actions">

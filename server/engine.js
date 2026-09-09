@@ -534,18 +534,54 @@ async function buildCollaborationInputs(cwd, prompt) {
 }
 
 async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
+  const isAuto = !mode || mode === "auto";
   const taskType = analyzeTask(prompt);
-  const selectedMode = mode || taskType.routing;
+  let selectedMode = isAuto ? taskType.routing : mode;
+
+  if (isAuto && (await AGENTS.mimo.authCheck())) {
+    if (selectedMode === "collaborative") {
+      selectedMode = "mimo-gemini";
+    } else if (selectedMode === "codex") {
+      selectedMode = "mimo";
+    }
+  }
+
+  if (isAuto) {
+    emitHeader(
+      onEvent,
+      `> 🤖 **自動判別 (Auto)**: [${taskType.reason}] ➔ **${selectedMode}** を選択しました\n\n`,
+      "auto",
+      "routing"
+    );
+  }
 
   switch (selectedMode) {
     case "codex": {
-      const result = await runCodex(prompt, {
-        cwd,
-        model,
-        signal,
-        onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "response" }),
-      });
-      return requireSuccessfulAgent(result);
+      try {
+        const result = await runCodex(prompt, {
+          cwd,
+          model,
+          signal,
+          onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "response" }),
+        });
+        return requireSuccessfulAgent(result);
+      } catch (error) {
+        if (isAuto && (await AGENTS.mimo.authCheck())) {
+          emitHeader(
+            onEvent,
+            `\n\n> ⚠️ [Codex利用不可のため、Xiaomi MiMoへ自動切り替えしました]\n\n`,
+            "mimo",
+            "fallback"
+          );
+          const fallbackResult = await runMiMo(prompt, {
+            model: "mimo-v2.5-pro",
+            signal,
+            onChunk: (text) => onEvent?.({ text, agent: "mimo", phase: "response" }),
+          });
+          return requireSuccessfulAgent(fallbackResult);
+        }
+        throw error;
+      }
     }
 
     case "antigravity": {
@@ -616,98 +652,111 @@ async function orchestrate(prompt, { cwd, mode, model, signal, onEvent } = {}) {
     }
 
     case "collaborative": {
-      const { workspaceContext, baselineHead, initialGitState } =
-        await buildCollaborationInputs(cwd, prompt);
+      try {
+        const { workspaceContext, baselineHead, initialGitState } =
+          await buildCollaborationInputs(cwd, prompt);
 
-      emitHeader(
-        onEvent,
-        "## Plan (Gemini/Antigravity)\n",
-        "antigravity",
-        "planning-header"
-      );
-      const plan = requireSuccessfulAgent(
-        await runAntigravityDetached(buildPlanPrompt(prompt, workspaceContext.text), {
-          model: "pro",
-          signal,
-          onChunk: (text) =>
-            onEvent?.({ text, agent: "antigravity", phase: "planning" }),
-        })
-      );
-
-      emitHeader(
-        onEvent,
-        "\n\n## Implementation (Codex/GPT)\n",
-        "codex",
-        "implementation-header"
-      );
-      const implementation = requireSuccessfulAgent(
-        await runCodex(buildImplementationPrompt(prompt, plan.content, initialGitState), {
-          cwd,
-          signal,
-          onChunk: (text) =>
-            onEvent?.({ text, agent: "codex", phase: "implementation" }),
-        })
-      );
-
-      const [currentGitState, afterContext] = await Promise.all([
-        buildGitReviewContext(cwd, { baseRef: baselineHead }),
-        buildWorkspaceContext(cwd, {
-          hint: prompt,
-          maxBytes: 64 * 1024,
-          maxFileBytes: 8 * 1024,
-        }),
-      ]);
-
-      emitHeader(
-        onEvent,
-        "\n\n## Review (Gemini/Antigravity)\n",
-        "antigravity",
-        "review-header"
-      );
-      const review = requireSuccessfulAgent(
-        await runAntigravityDetached(
-          buildReviewPrompt(
-            prompt,
-            plan.content,
-            implementation.content,
-            initialGitState,
-            currentGitState,
-            afterContext.text
-          ),
-          {
+        emitHeader(
+          onEvent,
+          "## Plan (Gemini/Antigravity)\n",
+          "antigravity",
+          "planning-header"
+        );
+        const plan = requireSuccessfulAgent(
+          await runAntigravityDetached(buildPlanPrompt(prompt, workspaceContext.text), {
             model: "pro",
             signal,
             onChunk: (text) =>
-              onEvent?.({ text, agent: "antigravity", phase: "review" }),
-          }
-        )
-      );
+              onEvent?.({ text, agent: "antigravity", phase: "planning" }),
+          })
+        );
 
-      emitHeader(
-        onEvent,
-        "\n\n## Refinement (Codex/GPT)\n",
-        "codex",
-        "refinement-header"
-      );
-      const refinement = requireSuccessfulAgent(
-        await runCodex(buildRefinementPrompt(prompt, review.content, currentGitState), {
-          cwd,
-          signal,
-          onChunk: (text) =>
-            onEvent?.({ text, agent: "codex", phase: "refinement" }),
-        })
-      );
+        emitHeader(
+          onEvent,
+          "\n\n## Implementation (Codex/GPT)\n",
+          "codex",
+          "implementation-header"
+        );
+        const implementation = requireSuccessfulAgent(
+          await runCodex(buildImplementationPrompt(prompt, plan.content, initialGitState), {
+            cwd,
+            signal,
+            onChunk: (text) =>
+              onEvent?.({ text, agent: "codex", phase: "implementation" }),
+          })
+        );
 
-      return {
-        content: formatCollaborativeResult({
-          plan: plan.content,
-          implementation: implementation.content,
-          review: review.content,
-          refinement: refinement.content,
-        }),
-        agent: "collaborative",
-        code: refinement.code,
-      };
+        const [currentGitState, afterContext] = await Promise.all([
+          buildGitReviewContext(cwd, { baseRef: baselineHead }),
+          buildWorkspaceContext(cwd, {
+            hint: prompt,
+            maxBytes: 64 * 1024,
+            maxFileBytes: 8 * 1024,
+          }),
+        ]);
+
+        emitHeader(
+          onEvent,
+          "\n\n## Review (Gemini/Antigravity)\n",
+          "antigravity",
+          "review-header"
+        );
+        const review = requireSuccessfulAgent(
+          await runAntigravityDetached(
+            buildReviewPrompt(
+              prompt,
+              plan.content,
+              implementation.content,
+              initialGitState,
+              currentGitState,
+              afterContext.text
+            ),
+            {
+              model: "pro",
+              signal,
+              onChunk: (text) =>
+                onEvent?.({ text, agent: "antigravity", phase: "review" }),
+            }
+          )
+        );
+
+        emitHeader(
+          onEvent,
+          "\n\n## Refinement (Codex/GPT)\n",
+          "codex",
+          "refinement-header"
+        );
+        const refinement = requireSuccessfulAgent(
+          await runCodex(buildRefinementPrompt(prompt, review.content, currentGitState), {
+            cwd,
+            signal,
+            onChunk: (text) =>
+              onEvent?.({ text, agent: "codex", phase: "refinement" }),
+          })
+        );
+
+        return {
+          content: formatCollaborativeResult({
+            plan: plan.content,
+            implementation: implementation.content,
+            review: review.content,
+            refinement: refinement.content,
+          }),
+          agent: "collaborative",
+          code: refinement.code,
+        };
+      } catch (err) {
+        if (await AGENTS.mimo.authCheck()) {
+          emitHeader(
+            onEvent,
+            `\n\n> ⚠️ [Codex利用不可のため、MiMo + Gemini 協調モードへ自動切り替えしました]\n\n`,
+            "mimo-gemini",
+            "fallback"
+          );
+          return orchestrate(prompt, { cwd, mode: "mimo-gemini", model, signal, onEvent });
+        }
+        throw err;
+      }
     }
 
     case "mimo": {
