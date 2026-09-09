@@ -133,6 +133,26 @@ Bridge-only launch:
 ~/.cursor-codex-bridge/bin/open-cursor
 ```
 
+### Mobile dashboard security
+
+The mobile dashboard is **localhost-only by default**. Starting Open-Cursor no longer exposes execution APIs to the LAN automatically.
+
+To opt in to phone/tablet access on a trusted LAN:
+
+```bash
+MOBILE_ALLOW_REMOTE=1 ~/.cursor-codex-bridge/bin/open-cursor
+```
+
+The launcher creates a 256-bit pairing token in `~/.cursor-codex-bridge/mobile.token` with mode `0600` and prints a pairing URL using `#token=...`. URL fragments are not sent in HTTP requests; the browser moves the token into session storage and sends it only in a Bearer authorization header.
+
+Arbitrary remote shell execution is a separate high-trust opt-in and remains disabled by default:
+
+```bash
+MOBILE_ALLOW_REMOTE=1 MOBILE_ALLOW_EXEC=1 ~/.cursor-codex-bridge/bin/open-cursor
+```
+
+The dashboard uses plain HTTP. LAN mode should only be used on a trusted network or through an encrypted tunnel/VPN, and port 9880 must not be forwarded directly to the public Internet.
+
 Legacy shell-managed bridge stop:
 
 ```bash
