@@ -1,0 +1,51 @@
+name: Upgrade secure mobile transport
+
+on:
+  push:
+    branches: [feat/secure-mobile-transport]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: ${{ !contains(github.event.head_commit.message, 'generated secure mobile transport') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: feat/secure-mobile-transport
+          fetch-depth: 0
+
+      - name: Apply secure transport migration
+        run: node scripts/upgrade-mobile-transport.mjs
+
+      - name: Verify mobile transport
+        working-directory: mobile
+        run: |
+          npm run check
+          npm test
+
+      - name: Verify launcher and project
+        run: |
+          bash -n bin/open-cursor bin/stop-bridge bin/install.sh bin/open-cursor-app scripts/install-smoke-test.sh
+          cd server && npm run check && npm test
+          cd ../extension && npm run check && npm test
+
+      - name: Verify fail-closed transport markers
+        run: |
+          grep -q 'MOBILE_REMOTE_TRANSPORT=tls or MOBILE_REMOTE_TRANSPORT=tunnel' mobile/server.js
+          grep -q 'createHttpsServer' mobile/server.js
+          grep -q 'MOBILE_TLS_CERT_FILE' bin/open-cursor
+          grep -q 'MOBILE_REMOTE_TRANSPORT=tls' README.md
+          ! grep -q 'MOBILE_ALLOW_REMOTE=1 ~/.cursor-codex-bridge/bin/open-cursor' README.md
+
+      - name: Commit generated transport implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mobile/server.js mobile/server.test.js mobile/package.json bin/open-cursor README.md
+          git commit -m "feat: apply generated secure mobile transport"
+          git push origin HEAD:feat/secure-mobile-transport
