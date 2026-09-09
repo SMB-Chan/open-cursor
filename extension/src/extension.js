@@ -10,7 +10,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomBytes } = require("node:crypto");
 const { consumeSse } = require("./sse.js");
-const { summarizeWorkspaceReceipt } = require("./receipt.js");
+const { pollExecutionReceipt, summarizeWorkspaceReceipt } = require("./receipt.js");
 
 const DEFAULT_PORT = 9876;
 const HEALTH_TIMEOUT_MS = 1500;
@@ -264,35 +264,15 @@ function workspacePath() {
 }
 
 async function fetchExecutionReceipt(requestId, options = {}) {
-  if (!requestId) return null;
-  const attempts = Number.isInteger(options.attempts)
-    ? Math.max(1, options.attempts)
-    : RECEIPT_FETCH_ATTEMPTS;
-  const delayMs = Number.isInteger(options.delayMs)
-    ? Math.max(0, options.delayMs)
-    : RECEIPT_FETCH_DELAY_MS;
-
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), RECEIPT_FETCH_TIMEOUT_MS);
-    try {
-      const response = await fetch(`${bridgeUrl()}/v1/execution-receipts/${encodeURIComponent(requestId)}`, {
-        method: "GET",
-        signal: controller.signal,
-      });
-      if (response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        return payload?.receipt || null;
-      }
-      if (response.status !== 404) return null;
-    } catch {}
-    finally {
-      clearTimeout(timer);
-    }
-
-    if (attempt + 1 < attempts && delayMs > 0) await sleep(delayMs);
-  }
-  return null;
+  return pollExecutionReceipt({
+    requestId,
+    bridgeUrl: bridgeUrl(),
+    fetchFn: fetch,
+    sleepFn: sleep,
+    attempts: options.attempts ?? RECEIPT_FETCH_ATTEMPTS,
+    delayMs: options.delayMs ?? RECEIPT_FETCH_DELAY_MS,
+    timeoutMs: options.timeoutMs ?? RECEIPT_FETCH_TIMEOUT_MS,
+  });
 }
 
 async function streamMessage(context, prompt, mode, signal, onEvent, onStarted) {
