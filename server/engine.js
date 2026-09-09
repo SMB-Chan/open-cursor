@@ -23,7 +23,7 @@ import {
   stripGoalMarker,
 } from "./codex-sessions.js";
 
-const VERSION = "2.9.1";
+const VERSION = "2.9.2";
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const LOCAL_AGY_BIN = join(homedir(), ".local/bin/agy");
 const AGY_BIN = process.env.AGY_BIN || (existsSync(LOCAL_AGY_BIN) ? LOCAL_AGY_BIN : "agy");

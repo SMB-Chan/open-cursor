@@ -1,6 +1,6 @@
 {
   "name": "open-cursor-bridge",
-  "version": "2.9.1",
+  "version": "2.9.2",
   "type": "module",
   "description": "Multi-agent coding bridge with subscription-backed local agents and optional external remote providers.",
   "main": "index.js",

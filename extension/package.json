@@ -2,7 +2,7 @@
   "name": "open-cursor-bridge",
   "displayName": "Open-Cursor Multi-Agent Bridge",
   "description": "Codex + Antigravity + optional MiMo multi-agent coding bridge with execution receipts",
-  "version": "2.9.1",
+  "version": "2.9.2",
   "publisher": "open-cursor",
   "engines": {
     "vscode": "^1.80.0"
@@ -40,6 +40,11 @@
       {
         "command": "openCursor.chat",
         "title": "Open-Cursor: Chat with Agents"
+      },
+      {
+        "command": "openCursor.update",
+        "title": "Open-Cursor: Update Open-Cursor",
+        "icon": "$(sync)"
       }
     ],
     "keybindings": [
@@ -88,6 +93,11 @@
           "type": "string",
           "default": "",
           "description": "Workspace path for agent context; defaults to the first open workspace folder"
+        },
+        "openCursor.updateOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Check for Open-Cursor updates (git fetch) when Cursor starts and notify when newer commits exist."
         }
       }
     }

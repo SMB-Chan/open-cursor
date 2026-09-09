@@ -66,13 +66,42 @@ function updateStatus(state, detail = "") {
 
   if (state === "online") {
     statusBar.text = "$(check) Open-Cursor";
-    statusBar.tooltip = detail || "Bridge online";
+    statusBar.tooltip = detail || "Bridge online · click for status (Command Palette: Update Open-Cursor)";
   } else if (state === "starting") {
     statusBar.text = "$(sync~spin) Open-Cursor";
     statusBar.tooltip = "Bridge starting";
   } else {
     statusBar.text = "$(circle-slash) Open-Cursor";
     statusBar.tooltip = detail || "Bridge offline";
+  }
+}
+
+// Startup update check: git fetch + ahead-count only; never mutates anything.
+async function checkForUpdatesQuietly() {
+  const repoDir = path.resolve(context.extensionPath, "..");
+  const localVersion = require(path.join(repoDir, "extension", "package.json")).version;
+
+  const git = (args) => new Promise((resolvePromise) => {
+    const child = spawn("git", args, {
+      cwd: repoDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    child.once("error", () => resolvePromise(null));
+    child.once("exit", (code) => resolvePromise(code === 0 ? out.trim() : null));
+  });
+
+  await git(["fetch", "origin", "--quiet"]);
+  const ahead = await git(["rev-list", "--count", "origin/master..HEAD"]);
+  const behind = await git(["rev-list", "--count", "HEAD..origin/master"]);
+  if (behind && Number(behind) > 0) {
+    const action = await vscode.window.showInformationMessage(
+      `Open-Cursor v${localVersion}: ${behind} update(s) available on GitHub.`,
+      "Update Now",
+      "Later"
+    );
+    if (action === "Update Now") await runOpenCursorUpdate(context);
   }
 }
 
@@ -326,6 +355,74 @@ async function streamMessage(context, prompt, mode, signal, onEvent, onStarted, 
   return { content, requestId: bridgeRequestId, workspaceReceipt };
 }
 
+let updateInProgress = false;
+
+async function runOpenCursorUpdate(context) {
+  if (updateInProgress) {
+    vscode.window.showInformationMessage("An Open-Cursor update is already running.");
+    return;
+  }
+
+  const confirmItem = await vscode.window.showInformationMessage(
+    "Update Open-Cursor? (git pull + syntax/test checks + bridge restart + registry refresh)",
+    { modal: true },
+    "Update"
+  );
+  if (confirmItem !== "Update") return;
+
+  const repoDir = path.resolve(context.extensionPath, "..");
+  const updateScript = path.join(repoDir, "bin", "update.sh");
+  if (!fs.existsSync(updateScript)) {
+    vscode.window.showErrorMessage(`Update script not found: ${updateScript}`);
+    return;
+  }
+
+  updateInProgress = true;
+  outputChannel?.show(true);
+  outputChannel?.appendLine(`[update] running ${updateScript} …`);
+  const progress = vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Open-Cursor update", cancellable: false },
+    () => new Promise((resolvePromise) => {
+      const child = spawn("bash", [updateScript, "--yes"], {
+        cwd: repoDir,
+        env: {
+          ...process.env,
+          PATH: `${path.join(os.homedir(), ".local", "bin")}:${process.env.PATH || ""}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      logProcessStream(child.stdout, "[update] ");
+      logProcessStream(child.stderr, "[update:error] ");
+      child.once("error", (error) => {
+        outputChannel?.appendLine(`[update] spawn error: ${error.message}`);
+        resolvePromise({ ok: false, error });
+      });
+      child.once("exit", (code, signal) => {
+        outputChannel?.appendLine(`[update] exited code=${code ?? "null"} signal=${signal ?? "none"}`);
+        resolvePromise({ ok: code === 0 });
+      });
+    })
+  );
+
+  const result = await progress;
+  updateInProgress = false;
+
+  if (result.ok) {
+    const action = await vscode.window.showInformationMessage(
+      "Open-Cursor update finished. Reload Cursor to load the updated extension?",
+      "Reload Window"
+    );
+    if (action === "Reload Window") {
+      await vscode.commands.executeCommand("workbench.action.reloadWindow");
+    }
+  } else {
+    vscode.window.showErrorMessage(
+      "Open-Cursor update failed — see the Open-Cursor output channel. Uncommitted changes block git pull; commit or stash first."
+    );
+  }
+}
+
 async function showStatus() {
   try {
     const health = await fetchBridge("/health");
@@ -478,6 +575,7 @@ function activate(context) {
     ),
     vscode.commands.registerCommand("openCursor.stopBridge", () => stopManagedBridge()),
     vscode.commands.registerCommand("openCursor.showStatus", showStatus),
+    vscode.commands.registerCommand("openCursor.update", () => runOpenCursorUpdate(context)),
     vscode.commands.registerCommand("openCursor.selectAgent", async () => {
       const mode = await vscode.window.showQuickPick(
         [
@@ -520,6 +618,12 @@ function activate(context) {
       }
     })
   );
+
+  if (config().get("updateOnStartup", false)) {
+    checkForUpdatesQuietly().catch((error) => {
+      outputChannel?.appendLine(`[update] startup check failed: ${error.message}`);
+    });
+  }
 
   if (config().get("autoStartBridge", true)) {
     startManagedBridge(context, { notify: false }).catch((error) => {
