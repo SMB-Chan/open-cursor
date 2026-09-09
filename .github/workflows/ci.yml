@@ -55,6 +55,12 @@ jobs:
       - name: Test extension registry upgrades
         run: node --test scripts/register-extension.test.mjs
 
+      - name: Test release packager
+        run: node --test scripts/package-release.test.mjs
+
+      - name: Gate release versions
+        run: node scripts/package-release.mjs --check-only
+
       - name: Check Antigravity adapter
         run: node --check bin/agy-open-cursor && node --check scripts/agy-adapter.test.cjs
 
