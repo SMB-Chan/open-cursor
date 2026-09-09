@@ -1,0 +1,40 @@
+name: Apply execution receipt UI integration
+
+on:
+  push:
+    branches: [feat/write-execution-receipts]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: ${{ !contains(github.event.head_commit.message, 'generated execution receipt UI') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: feat/write-execution-receipts
+          fetch-depth: 0
+
+      - name: Apply receipt UI migration
+        run: node scripts/apply-receipt-ui.mjs
+
+      - name: Verify extension and server
+        run: |
+          cd extension
+          npm run check
+          npm test
+          cd ../server
+          npm run check
+          npm test
+
+      - name: Commit generated UI integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add extension/src/extension.js extension/package.json README.md
+          git commit -m "feat: apply generated execution receipt UI"
+          git push origin HEAD:feat/write-execution-receipts
