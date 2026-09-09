@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   RuntimeConfigError,
+  applyRuntimeDefaultsToEnv,
   expandHome,
   parseRuntimeConfig,
   validateRawConfig,
@@ -99,12 +100,27 @@ test("environment variables override file values and are reported by name only",
 
 test("invalid environment overrides fail instead of silently falling back", () => {
   assert.throws(
-    () => parseRuntimeConfig(sampleConfig(), { BRIDGE_PORT: "not-a-port" }),
+    () => parseRuntimeConfig(sampleConfig(), { BRIDGE_PORT: "9876junk" }),
     (error) => error instanceof RuntimeConfigError && /BRIDGE_PORT/.test(error.message)
   );
 });
 
-test("security invariants cannot be disabled in configuration", () => {
+test("runtime defaults populate missing process environment without replacing overrides", () => {
+  const parsed = parseRuntimeConfig(sampleConfig(), {}, "/home/demo");
+  const env = { BRIDGE_PORT: "7777" };
+
+  applyRuntimeDefaultsToEnv(parsed, env);
+
+  assert.equal(env.BRIDGE_PORT, "7777");
+  assert.equal(env.BRIDGE_HOST, "127.0.0.1");
+  assert.equal(env.BRIDGE_ALLOW_REMOTE, "0");
+  assert.equal(env.BRIDGE_AGENT_TIMEOUT_MS, "600000");
+  assert.equal(env.BRIDGE_CONTEXT_MAX_BYTES, "131072");
+  assert.equal(env.CODEX_BIN, "codex");
+  assert.equal(env.AGY_BIN, "/home/demo/bin/agy");
+});
+
+test("security and collaboration invariants cannot be weakened", () => {
   const secretsDisabled = sampleConfig();
   secretsDisabled.context.omitSecretLikePaths = false;
   assert.throws(
@@ -117,6 +133,13 @@ test("security invariants cannot be disabled in configuration", () => {
   assert.throws(
     () => validateRawConfig(competingWriter),
     (error) => error instanceof RuntimeConfigError && /workspaceWriter/.test(error.message)
+  );
+
+  const parallelized = sampleConfig();
+  parallelized.collaboration.collaborative = ["plan", "review", "implement", "refine"];
+  assert.throws(
+    () => validateRawConfig(parallelized),
+    (error) => error instanceof RuntimeConfigError && /collaboration\.collaborative/.test(error.message)
   );
 });
 
