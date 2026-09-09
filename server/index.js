@@ -40,6 +40,7 @@ const ROUTING_MODES = new Set([
   "mimo",
   "mimo-gemini",
   "auto",
+  "autonomous",
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -418,6 +419,12 @@ async function handleModels(req, res) {
       object: "model",
       owned_by: "bridge",
       description: "Auto (自動判別: プロンプト内容から Gemini / MiMo / 協調モードを最適自動選択)",
+    },
+    {
+      id: "autonomous",
+      object: "model",
+      owned_by: "bridge",
+      description: "Autonomous Agent (自律実行: 手動承認なしでファイルの読み書き・コマンド実行・検証を全自動完遂)",
     },
   ];
 
