@@ -4,7 +4,7 @@
   "title": "Open-Cursor reference configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["bridge", "execution", "agents", "routing", "protection"],
+  "required": ["bridge", "execution", "context", "collaboration", "agents", "routing", "protection"],
   "properties": {
     "$schema": { "type": "string" },
     "bridge": {
@@ -25,6 +25,39 @@
         "killGraceMs": { "type": "integer", "minimum": 100 },
         "maxBodyBytes": { "type": "integer", "minimum": 1024 },
         "maxOutputBytes": { "type": "integer", "minimum": 1024 }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxFiles", "maxBytes", "maxFileBytes", "diffMaxBytes", "omitSecretLikePaths"],
+      "properties": {
+        "maxFiles": { "type": "integer", "minimum": 10 },
+        "maxBytes": { "type": "integer", "minimum": 4096 },
+        "maxFileBytes": { "type": "integer", "minimum": 1024 },
+        "diffMaxBytes": { "type": "integer", "minimum": 4096 },
+        "omitSecretLikePaths": { "type": "boolean" }
+      }
+    },
+    "collaboration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pipeline", "collaborative", "reviewerWorkingDirectory", "workspaceWriter"],
+      "properties": {
+        "pipeline": {
+          "type": "array",
+          "items": { "enum": ["plan", "implement", "review", "refine"] },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "collaborative": {
+          "type": "array",
+          "items": { "enum": ["plan", "implement", "review", "refine"] },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "reviewerWorkingDirectory": { "enum": ["detached-temporary"] },
+        "workspaceWriter": { "enum": ["codex"] }
       }
     },
     "agents": {
@@ -77,7 +110,8 @@
         "codexDir": { "type": "string" },
         "geminiDir": { "type": "string" },
         "loopbackOnlyByDefault": { "type": "boolean" },
-        "browserOriginExecutionDenied": { "type": "boolean" }
+        "browserOriginExecutionDenied": { "type": "boolean" },
+        "concurrentWorkspaceWriters": { "type": "boolean" }
       }
     }
   },

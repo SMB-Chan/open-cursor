@@ -10,6 +10,19 @@
     "maxBodyBytes": 1048576,
     "maxOutputBytes": 8388608
   },
+  "context": {
+    "maxFiles": 300,
+    "maxBytes": 131072,
+    "maxFileBytes": 12288,
+    "diffMaxBytes": 98304,
+    "omitSecretLikePaths": true
+  },
+  "collaboration": {
+    "pipeline": ["plan", "implement"],
+    "collaborative": ["plan", "implement", "review", "refine"],
+    "reviewerWorkingDirectory": "detached-temporary",
+    "workspaceWriter": "codex"
+  },
   "agents": {
     "codex": {
       "enabled": true,
@@ -42,6 +55,7 @@
     "codexDir": "~/.codex/",
     "geminiDir": "~/.gemini/antigravity-cli/",
     "loopbackOnlyByDefault": true,
-    "browserOriginExecutionDenied": true
+    "browserOriginExecutionDenied": true,
+    "concurrentWorkspaceWriters": false
   }
 }
