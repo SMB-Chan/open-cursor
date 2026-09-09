@@ -23,7 +23,7 @@ jobs:
           node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 18) process.exit(1)'
 
       - name: Check shell launchers
-        run: bash -n bin/install.sh bin/open-cursor bin/open-cursor-app bin/stop-bridge
+        run: bash -n bin/install.sh bin/open-cursor bin/open-cursor-app bin/stop-bridge scripts/install-smoke-test.sh
 
       - name: Check bridge syntax
         working-directory: server
@@ -41,5 +41,14 @@ jobs:
         working-directory: extension
         run: npm test
 
-      - name: Check reference configuration JSON
+      - name: Check installer support scripts
+        run: node --check scripts/register-extension.mjs && node --check scripts/register-extension.test.mjs
+
+      - name: Test extension registry upgrades
+        run: node --test scripts/register-extension.test.mjs
+
+      - name: Smoke test installer and reinstall
+        run: bash scripts/install-smoke-test.sh
+
+      - name: Check runtime configuration JSON
         run: node -e 'const fs=require("fs"); for (const file of ["config/bridge.json","config/config.schema.json"]) JSON.parse(fs.readFileSync(file,"utf8"));'
