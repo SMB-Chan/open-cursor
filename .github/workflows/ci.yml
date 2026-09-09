@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Verify Node runtime
+        run: |
+          node --version
+          node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 18) process.exit(1)'
+
+      - name: Check shell launchers
+        run: bash -n bin/install.sh bin/open-cursor bin/open-cursor-app bin/stop-bridge
+
+      - name: Check bridge syntax
+        working-directory: server
+        run: npm run check
+
+      - name: Test bridge
+        working-directory: server
+        run: npm test
+
+      - name: Check extension source
+        working-directory: extension
+        run: npm run check

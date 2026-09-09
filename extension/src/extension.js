@@ -1,0 +1,569 @@
+/**
+ * Open-Cursor Bridge Extension
+ * VS Code/Cursor extension for multi-agent coding.
+ */
+
+const vscode = require("vscode");
+const { spawn } = require("node:child_process");
+const path = require("node:path");
+const { randomBytes } = require("node:crypto");
+
+const DEFAULT_PORT = 9876;
+const HEALTH_TIMEOUT_MS = 1500;
+const STARTUP_TIMEOUT_MS = 10000;
+
+let bridgeProcess = null;
+let bridgeStartPromise = null;
+let outputChannel = null;
+let statusBar = null;
+let shuttingDown = false;
+const activeRequests = new Set();
+
+function config() {
+  return vscode.workspace.getConfiguration("openCursor");
+}
+
+function bridgeUrl() {
+  return `http://127.0.0.1:${config().get("bridgePort", DEFAULT_PORT)}`;
+}
+
+function updateStatus(state, detail = "") {
+  if (!statusBar) return;
+
+  if (state === "online") {
+    statusBar.text = "$(check) Open-Cursor";
+    statusBar.tooltip = detail || "Bridge online";
+  } else if (state === "starting") {
+    statusBar.text = "$(sync~spin) Open-Cursor";
+    statusBar.tooltip = "Bridge starting";
+  } else {
+    statusBar.text = "$(circle-slash) Open-Cursor";
+    statusBar.tooltip = detail || "Bridge offline";
+  }
+}
+
+function bridgeErrorMessage(error) {
+  if (error?.name === "AbortError") return "Bridge request timed out or was cancelled";
+  return error?.message || String(error);
+}
+
+async function fetchBridge(pathname, options = {}, timeoutMs = HEALTH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(`${bridgeUrl()}${pathname}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error?.message || `Bridge returned HTTP ${response.status}`);
+    }
+    return payload;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Bridge did not respond at ${bridgeUrl()}`);
+    }
+    if (error?.message?.startsWith("Bridge returned") || error?.message?.includes("Browser-origin")) {
+      throw error;
+    }
+    throw new Error(`Bridge not reachable at ${bridgeUrl()}: ${bridgeErrorMessage(error)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function isBridgeRunning() {
+  try {
+    const health = await fetchBridge("/health");
+    return health?.status === "ok";
+  } catch {
+    return false;
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function logProcessStream(stream, prefix) {
+  stream?.on("data", (chunk) => {
+    outputChannel?.append(`${prefix}${chunk.toString()}`);
+  });
+}
+
+function setManagedProcess(child) {
+  bridgeProcess = child;
+  logProcessStream(child.stdout, "[bridge] ");
+  logProcessStream(child.stderr, "[bridge:error] ");
+
+  child.once("error", (error) => {
+    outputChannel?.appendLine(`[bridge] process error: ${error.message}`);
+  });
+
+  child.once("exit", (code, signal) => {
+    if (bridgeProcess === child) bridgeProcess = null;
+    outputChannel?.appendLine(
+      `[bridge] exited code=${code ?? "null"} signal=${signal ?? "none"}`
+    );
+    if (!shuttingDown) updateStatus("offline", "Managed bridge stopped");
+  });
+}
+
+async function waitForBridge(child) {
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode) {
+      throw new Error("Bridge process exited during startup");
+    }
+    if (await isBridgeRunning()) return;
+    await sleep(250);
+  }
+  throw new Error(`Bridge did not become healthy within ${STARTUP_TIMEOUT_MS / 1000}s`);
+}
+
+async function startManagedBridge(context, { notify = true } = {}) {
+  if (await isBridgeRunning()) {
+    updateStatus("online", bridgeProcess ? "Bridge online (managed)" : "Bridge online (external)");
+    if (notify) vscode.window.showInformationMessage("Open-Cursor bridge is already running.");
+    return;
+  }
+
+  if (bridgeStartPromise) return bridgeStartPromise;
+
+  bridgeStartPromise = (async () => {
+    updateStatus("starting");
+
+    const serverDir = path.resolve(context.extensionPath, "..", "server");
+    const nodePath = config().get("nodePath", "node") || "node";
+    const port = String(config().get("bridgePort", DEFAULT_PORT));
+
+    outputChannel?.appendLine(`[bridge] starting ${nodePath} index.js in ${serverDir}`);
+    const child = spawn(nodePath, ["index.js"], {
+      cwd: serverDir,
+      env: { ...process.env, BRIDGE_PORT: port, BRIDGE_HOST: "127.0.0.1" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    setManagedProcess(child);
+
+    try {
+      await waitForBridge(child);
+      updateStatus("online", "Bridge online (managed by extension)");
+      if (notify) vscode.window.showInformationMessage("Open-Cursor bridge started.");
+    } catch (error) {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      if (bridgeProcess === child) bridgeProcess = null;
+      updateStatus("offline", "Bridge failed to start");
+      throw error;
+    }
+  })();
+
+  try {
+    await bridgeStartPromise;
+  } finally {
+    bridgeStartPromise = null;
+  }
+}
+
+async function ensureBridge(context) {
+  if (await isBridgeRunning()) {
+    updateStatus("online", bridgeProcess ? "Bridge online (managed)" : "Bridge online (external)");
+    return;
+  }
+  await startManagedBridge(context, { notify: false });
+}
+
+async function stopManagedBridge({ notify = true } = {}) {
+  for (const controller of activeRequests) controller.abort();
+
+  const child = bridgeProcess;
+  if (!child || child.exitCode !== null) {
+    bridgeProcess = null;
+    if (await isBridgeRunning()) {
+      updateStatus("online", "Bridge online (external)");
+      if (notify) {
+        vscode.window.showWarningMessage(
+          "The bridge is running, but it was not started by this extension, so it was left untouched."
+        );
+      }
+      return;
+    }
+    updateStatus("offline");
+    if (notify) vscode.window.showInformationMessage("Open-Cursor bridge is not running.");
+    return;
+  }
+
+  child.kill("SIGTERM");
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  await Promise.race([exited, sleep(2000)]);
+  if (child.exitCode === null && !child.signalCode) child.kill("SIGKILL");
+  if (bridgeProcess === child) bridgeProcess = null;
+  updateStatus("offline");
+  if (notify) vscode.window.showInformationMessage("Open-Cursor bridge stopped.");
+}
+
+function workspacePath() {
+  return (
+    config().get("workspacePath") ||
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
+    process.cwd()
+  );
+}
+
+async function consumeSse(response, onDelta) {
+  if (!response.body) throw new Error("Bridge returned an empty streaming response");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let done = false;
+
+  const processBlock = (block) => {
+    const data = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+
+    if (!data) return false;
+    if (data.trim() === "[DONE]") return true;
+
+    let event;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      return false;
+    }
+
+    const delta = event?.choices?.[0]?.delta?.content;
+    if (typeof delta === "string" && delta.length > 0) {
+      content += delta;
+      onDelta(delta);
+    }
+    return false;
+  };
+
+  while (!done) {
+    const next = await reader.read();
+    if (next.done) {
+      buffer += decoder.decode();
+      break;
+    }
+
+    buffer += decoder.decode(next.value, { stream: true });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = blocks.pop() || "";
+    for (const block of blocks) {
+      if (processBlock(block)) {
+        done = true;
+        break;
+      }
+    }
+  }
+
+  if (!done && buffer.trim()) processBlock(buffer);
+  return content;
+}
+
+async function streamMessage(context, prompt, mode, signal, onDelta) {
+  await ensureBridge(context);
+
+  const selectedMode = mode || config().get("defaultAgent", "collaborative");
+  const response = await fetch(`${bridgeUrl()}/v1/chat/completions`, {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Workspace-Path": workspacePath(),
+      "X-Agent-Mode": selectedMode,
+    },
+    body: JSON.stringify({
+      model: selectedMode,
+      messages: [{ role: "user", content: prompt }],
+      stream: true,
+    }),
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload?.error?.message || `Bridge returned HTTP ${response.status}`);
+  }
+
+  return consumeSse(response, onDelta);
+}
+
+async function showStatus() {
+  try {
+    const health = await fetchBridge("/health");
+    const agents = await fetchBridge("/v1/agents");
+    updateStatus("online", bridgeProcess ? "Bridge online (managed)" : "Bridge online (external)");
+
+    const lines = [
+      `Bridge: ${health.status}${bridgeProcess ? " (managed by extension)" : " (external)"}`,
+      `Billing: ${health.billing}`,
+      "",
+      "Agents:",
+    ];
+
+    for (const agent of Object.values(agents.agents || {})) {
+      const status = agent.authenticated ? "READY" : "NOT AUTH";
+      lines.push(`  ${agent.name}: ${status} [${agent.strengths.join(", ")}]`);
+    }
+
+    vscode.window.showInformationMessage(lines.join("\n"), { modal: true });
+  } catch (error) {
+    updateStatus("offline");
+    vscode.window.showErrorMessage(error.message);
+  }
+}
+
+function registerChatCommand(context) {
+  return vscode.commands.registerCommand("openCursor.chat", async () => {
+    const panel = vscode.window.createWebviewPanel(
+      "openCursorChat",
+      "Open-Cursor Chat",
+      vscode.ViewColumn.Beside,
+      { enableScripts: true }
+    );
+
+    panel.webview.html = getChatHTML(panel.webview);
+    let currentRequest = null;
+
+    panel.onDidDispose(() => currentRequest?.controller.abort());
+
+    panel.webview.onDidReceiveMessage(async (msg) => {
+      if (msg.type === "cancel") {
+        currentRequest?.controller.abort();
+        return;
+      }
+      if (msg.type !== "send" || typeof msg.text !== "string" || currentRequest) return;
+
+      const controller = new AbortController();
+      currentRequest = { id: msg.requestId, controller };
+      activeRequests.add(controller);
+      panel.webview.postMessage({ type: "begin", requestId: msg.requestId });
+
+      try {
+        const content = await streamMessage(
+          context,
+          msg.text,
+          msg.mode,
+          controller.signal,
+          (delta) => panel.webview.postMessage({ type: "delta", requestId: msg.requestId, text: delta })
+        );
+        if (!controller.signal.aborted) {
+          panel.webview.postMessage({ type: "complete", requestId: msg.requestId, empty: !content });
+        }
+      } catch (error) {
+        if (controller.signal.aborted || error?.name === "AbortError") {
+          panel.webview.postMessage({ type: "cancelled", requestId: msg.requestId });
+        } else {
+          panel.webview.postMessage({ type: "error", requestId: msg.requestId, text: error.message });
+        }
+      } finally {
+        activeRequests.delete(controller);
+        if (currentRequest?.controller === controller) currentRequest = null;
+      }
+    });
+  });
+}
+
+function activate(context) {
+  outputChannel = vscode.window.createOutputChannel("Open-Cursor");
+  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 30);
+  statusBar.command = "openCursor.showStatus";
+  updateStatus("offline");
+  statusBar.show();
+
+  context.subscriptions.push(outputChannel, statusBar, registerChatCommand(context));
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("openCursor.startBridge", () =>
+      startManagedBridge(context, { notify: true }).catch((error) => {
+        outputChannel?.appendLine(`[bridge] startup failed: ${error.stack || error.message}`);
+        vscode.window.showErrorMessage(`Open-Cursor bridge failed to start: ${error.message}`);
+      })
+    ),
+    vscode.commands.registerCommand("openCursor.stopBridge", () => stopManagedBridge()),
+    vscode.commands.registerCommand("openCursor.showStatus", showStatus),
+    vscode.commands.registerCommand("openCursor.selectAgent", async () => {
+      const mode = await vscode.window.showQuickPick(
+        [
+          { label: "Collaborative", description: "Both agents work together", value: "collaborative" },
+          { label: "Pipeline", description: "Gemini analyzes → Codex implements", value: "pipeline" },
+          { label: "Codex Only", description: "ChatGPT/Codex subscription", value: "codex" },
+          { label: "Antigravity Only", description: "Gemini subscription", value: "antigravity" },
+        ],
+        { placeHolder: "Select agent routing mode" }
+      );
+
+      if (mode) {
+        await config().update("defaultAgent", mode.value, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(`Agent mode set to: ${mode.label}`);
+      }
+    })
+  );
+
+  if (config().get("autoStartBridge", true)) {
+    startManagedBridge(context, { notify: false }).catch((error) => {
+      updateStatus("offline", "Auto-start failed; click for status");
+      outputChannel?.appendLine(`[bridge] auto-start failed: ${error.stack || error.message}`);
+    });
+  } else {
+    isBridgeRunning().then((running) =>
+      updateStatus(running ? "online" : "offline", running ? "Bridge online (external)" : "Bridge offline")
+    );
+  }
+}
+
+function getChatHTML(webview) {
+  const nonce = randomBytes(16).toString("hex");
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: var(--vscode-font-family); padding: 10px; color: var(--vscode-foreground); background: var(--vscode-editor-background); }
+    #messages { height: calc(100vh - 150px); overflow-y: auto; margin-bottom: 10px; }
+    .msg { padding: 8px 12px; margin: 6px 0; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .user { background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); }
+    .assistant { background: var(--vscode-editor-inactiveSelectionBackground); }
+    .error { color: var(--vscode-errorForeground); }
+    .thinking { color: var(--vscode-descriptionForeground); font-style: italic; }
+    #input-area { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: end; }
+    #input { resize: vertical; min-height: 38px; max-height: 180px; padding: 8px; font-family: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
+    #mode { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; padding: 8px; }
+    #actions { display: flex; gap: 6px; }
+    button { padding: 8px 14px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: default; }
+    #cancel { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+  </style>
+</head>
+<body>
+  <div id="messages"></div>
+  <div id="input-area">
+    <select id="mode">
+      <option value="collaborative">Collaborative</option>
+      <option value="pipeline">Pipeline</option>
+      <option value="codex">Codex</option>
+      <option value="antigravity">Antigravity</option>
+    </select>
+    <textarea id="input" placeholder="Ask anything…  Shift+Enter for a new line"></textarea>
+    <div id="actions">
+      <button id="cancel" disabled>Stop</button>
+      <button id="send">Send</button>
+    </div>
+  </div>
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    const messages = document.getElementById('messages');
+    const input = document.getElementById('input');
+    const mode = document.getElementById('mode');
+    const sendButton = document.getElementById('send');
+    const cancelButton = document.getElementById('cancel');
+    let activeRequestId = null;
+    let assistantNode = null;
+    let receivedDelta = false;
+
+    function addMsg(text, cls) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + cls;
+      div.textContent = text;
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+      return div;
+    }
+
+    function setBusy(busy) {
+      sendButton.disabled = busy;
+      cancelButton.disabled = !busy;
+      mode.disabled = busy;
+      input.disabled = busy;
+      if (!busy) input.focus();
+    }
+
+    function send() {
+      const text = input.value.trim();
+      if (!text || activeRequestId) return;
+      activeRequestId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      addMsg('> ' + text, 'user');
+      vscode.postMessage({ type: 'send', requestId: activeRequestId, text, mode: mode.value });
+      input.value = '';
+      setBusy(true);
+    }
+
+    function finish() {
+      activeRequestId = null;
+      assistantNode = null;
+      receivedDelta = false;
+      setBusy(false);
+    }
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        send();
+      }
+    });
+    sendButton.addEventListener('click', send);
+    cancelButton.addEventListener('click', () => {
+      if (activeRequestId) vscode.postMessage({ type: 'cancel', requestId: activeRequestId });
+    });
+
+    window.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (msg.requestId !== activeRequestId) return;
+
+      if (msg.type === 'begin') {
+        assistantNode = addMsg('Thinking…', 'assistant thinking');
+        receivedDelta = false;
+      } else if (msg.type === 'delta') {
+        if (!assistantNode) assistantNode = addMsg('', 'assistant');
+        if (!receivedDelta) {
+          assistantNode.textContent = '';
+          assistantNode.classList.remove('thinking');
+          receivedDelta = true;
+        }
+        assistantNode.textContent += msg.text;
+        messages.scrollTop = messages.scrollHeight;
+      } else if (msg.type === 'complete') {
+        if (assistantNode && !receivedDelta) {
+          assistantNode.textContent = msg.empty ? 'No response' : assistantNode.textContent;
+          assistantNode.classList.remove('thinking');
+        }
+        finish();
+      } else if (msg.type === 'cancelled') {
+        if (assistantNode) {
+          if (!receivedDelta) assistantNode.textContent = 'Cancelled.';
+          else assistantNode.textContent += '\n\n[Cancelled]';
+          assistantNode.classList.remove('thinking');
+        }
+        finish();
+      } else if (msg.type === 'error') {
+        if (assistantNode) assistantNode.remove();
+        addMsg(msg.text, 'error');
+        finish();
+      }
+    });
+  </script>
+</body>
+</html>`;
+}
+
+async function deactivate() {
+  shuttingDown = true;
+  for (const controller of activeRequests) controller.abort();
+  await stopManagedBridge({ notify: false });
+}
+
+module.exports = { activate, deactivate };

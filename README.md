@@ -1,68 +1,222 @@
-# Cursor Open Providers
+# Open-Cursor
 
-Cursorのエディタ・ターミナルに、自由に接続先を選べるContinueを組み合わせた個人用構成です。
-Cursor内蔵の課金対象Agentとは別の、Continueのチャット欄を使います。
+Open-Cursor is a local multi-agent bridge for Cursor/VS Code-style workflows. It routes coding tasks to subscription-authenticated command-line agents instead of requiring the bridge itself to use per-call API billing.
 
-## 起動と操作
+Current agent backends:
 
-- アプリ一覧の **Cursor（自由なLLM接続）**、または `~/.local/bin/cursor-open` で起動します。
-- フォルダを指定するときは `~/.local/bin/cursor-open /path/to/project` を実行します。
-- 左のContinueでモデルを選択し、Chat / Plan / Agentを切り替えます。
-- Agentではファイル編集やコマンド実行を提案できます。承認方法はContinue側で管理します。
-- `Ctrl+Shift+L`：Continueにフォーカス。選択コードの編集は `Ctrl+I`。
-- `Ctrl+Shift+J`：ターミナルにフォーカス。`Ctrl+Shift+T`：新しいターミナル。
-- 下部の **LLM Providers**：Continueの設定を開きます。
+- **Codex CLI** — expected to use ChatGPT subscription OAuth
+- **Antigravity CLI** — expected to use Gemini AI Pro subscription mode
+- **Collaborative mode** — runs both agents and combines the results
+- **Pipeline mode** — Gemini/Antigravity analyzes first, then Codex implements
 
-## プロバイダ設定
+> The bridge does not guarantee that an upstream CLI, subscription, or provider will remain available under the same terms. Verify the authentication/billing mode shown by each upstream CLI before use.
 
-初期接続には既存のMiMo `mimo-v2.5-pro` 設定を移行します。
-Agent用のツール対応を明示し、互換性を優先してMiMoのthinkingをdisabledに設定します。
-thinkingを利用する場合は設定の `requestOptions.extraBodyProperties.thinking.type` を変更できます。
-通常のチャット、編集、差分適用に同じモデルを利用します。
-自動Tab補完は専用モデルが未検証のため初期状態では無効です。
+## Architecture
 
-- 有効な設定：`~/.local/share/cursor-open-providers/continue/config.yaml`
-- APIキー：同じフォルダの `.env`（本人のみ読み書き可能）
-- 他の既存プロバイダのひな型：同じフォルダの `providers.example.yaml`
-
-config.yamlはJSON表記のYAMLです。通常のYAML表記に書き換えることもできます。
-独自OpenAI互換APIを追加する場合のモデル設定例：
-
-```yaml
-- name: My Coding Model
-  provider: openai
-  model: YOUR_MODEL_ID
-  apiBase: https://YOUR_PROVIDER/v1
-  apiKey: ${{ secrets.MY_PROVIDER_API_KEY }}
-  roles: [chat, edit, apply]
-  capabilities: [tool_use]
+```text
+Cursor extension
+    │
+    │  manages local bridge lifecycle
+    │  consumes SSE chat responses
+    ▼
+127.0.0.1:9876
+Open-Cursor bridge
+    ├── Codex CLI
+    └── Antigravity CLI
 ```
 
-対応モデルの場合にだけ `tool_use` を指定してください。
-`.env`に `MY_PROVIDER_API_KEY=...` を設定し、上のモデルを `models` に追加します。
-Ollama、OpenRouter、AnthropicなどはContinueが用意するproviderを指定できます。
-既存ひな型のモデル名は移行元のままなので、利用先で提供中のIDを確認して更新してください。
+The project uses a stable path at:
 
-Cursor Proのモデル選択制限を通らず、Continueから指定したプロバイダに接続します。
-接続先APIの料金・レート制限・モデル側の制約はそのまま適用されます。
-Cursor自体の組み込みAIコードを削除したビルドではありません。
-通常の起動経路では内蔵Agent画面を閉じ、関係するAI拡張を無効にしています。
-起動時はCursorに実装されている `--skip-onboarding --skip-welcome` を指定し、
-ログイン用の初回画面を表示せずエディタへ進みます。
-このCursor版にはタイトルバーのUpgrade案内が残ります。上記は有料機能を解放する改造ではありません。
+```text
+~/.cursor-codex-bridge
+```
 
-## 既存環境と復元
+The repository can be cloned directly there, or cloned elsewhere. When the installer is run from another clone path, it creates `~/.cursor-codex-bridge` as a symlink to that clone. The Cursor extension is then linked from `~/.cursor/extensions/open-cursor-bridge`.
 
-元のCursorの設定・ログイン・履歴、`~/.continue/config.json` は変更しません。
-**Cursor（元のIDE）** から以前の環境を開けます。`/usr/bin/cursor` も元のままです。
+This keeps the bridge code outside Cursor's managed application files so Cursor updates do not overwrite it.
 
-インストール内容は `python3 install.py plan`、適用は `python3 install.py install` で確認・実行できます。
-`python3 install.py restore` で起動入口を元に戻します。
-復元時には新構成の設定・キー・履歴を削除せず残します。
-インストール後に変更されたランチャーは上書きせず停止します。
+## Requirements
 
-## 参考
+- Linux
+- Node.js 18 or newer
+- Cursor
+- At least one supported agent CLI:
+  - `codex`
+  - `agy` / Antigravity CLI
+- Authentication already completed for the CLI you want to use
 
-- [Continueのプロバイダ設定](https://docs.continue.dev/customize/model-providers/top-level/openai)
-- [Continueの設定とAgent用ツール対応](https://docs.continue.dev/reference)
-- [MiMo Chat Completions API](https://mimo.mi.com/docs/en-US/api/chat/openai-api)
+For Codex, run its normal login flow and verify that it is using your intended ChatGPT subscription authentication. For Antigravity, verify its subscription/credit setting before using the bridge.
+
+## Install
+
+Clone the repository and run the installer:
+
+```bash
+git clone https://github.com/SMB-Chan/open-cursor.git
+cd open-cursor
+bash bin/install.sh
+```
+
+The installer:
+
+1. establishes `~/.cursor-codex-bridge`
+2. checks supported CLI availability and authentication state
+3. repairs the Antigravity `agentapi` shim when applicable
+4. links the Cursor extension
+5. creates an `Open-Cursor` desktop entry
+
+It refuses to overwrite an existing `~/.cursor-codex-bridge` that points to a different installation.
+
+## Start and bridge lifecycle
+
+By default the extension activates after Cursor starts and automatically starts the local bridge. The status bar shows the bridge state and opens the status view when clicked.
+
+If a bridge is already running on the configured port, the extension reuses it instead of spawning another process. The extension only stops a bridge process that it started itself; externally started bridge processes are deliberately left untouched.
+
+Available commands:
+
+```text
+Open-Cursor: Chat with Agents
+Open-Cursor: Start Bridge Server
+Open-Cursor: Stop Managed Bridge Server
+Open-Cursor: Show Agent Status
+Open-Cursor: Select Agent (Codex/Antigravity/Collaborative)
+```
+
+Manual launch remains available:
+
+```bash
+~/.cursor-codex-bridge/bin/open-cursor-app
+```
+
+To start only the bridge from a shell:
+
+```bash
+~/.cursor-codex-bridge/bin/open-cursor
+```
+
+The legacy shell-managed bridge can still be stopped with:
+
+```bash
+~/.cursor-codex-bridge/bin/stop-bridge
+```
+
+## Chat UX
+
+The extension requests OpenAI-compatible SSE responses and renders deltas incrementally. This means the UI is already prepared for true process-level streaming from the bridge rather than waiting for one complete response.
+
+The chat panel also provides a **Stop** button. Cancelling closes the extension-side request immediately. The bridge-side child-process cancellation path is being implemented next so the upstream CLI process is also terminated when the client disconnects.
+
+## Extension settings
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `openCursor.bridgePort` | `9876` | Local bridge port |
+| `openCursor.autoStartBridge` | `true` | Start the bridge after Cursor finishes starting |
+| `openCursor.nodePath` | `node` | Node.js executable used for the managed bridge |
+| `openCursor.defaultAgent` | `collaborative` | Default routing mode |
+| `openCursor.workspacePath` | empty | Override workspace path; otherwise the first open workspace is used |
+
+The extension is dependency-free at runtime and loads `extension/src/extension.js` directly. There is no generated extension bundle to keep in sync.
+
+## Routing modes
+
+| Mode | Behavior |
+| --- | --- |
+| `collaborative` | Codex and Antigravity run in parallel and results are combined |
+| `pipeline` | Antigravity analyzes first, then Codex receives the analysis and implements |
+| `codex` | Codex only |
+| `antigravity` | Antigravity only |
+
+Namespaced models are supported by the bridge, for example:
+
+```text
+codex/<model>
+antigravity/pro
+antigravity/flash
+```
+
+Routing aliases such as `codex` and `antigravity` are treated as routing modes, not forwarded as literal CLI model names.
+
+## Local API
+
+Default endpoint:
+
+```text
+http://127.0.0.1:9876
+```
+
+Available endpoints:
+
+```text
+GET  /health
+GET  /v1/models
+GET  /v1/agents
+POST /v1/chat/completions
+```
+
+Environment variables currently used by the server include:
+
+```text
+BRIDGE_PORT
+BRIDGE_HOST
+BRIDGE_MAX_BODY_BYTES
+BRIDGE_ALLOW_REMOTE
+CODEX_BIN
+AGY_BIN
+```
+
+`config/bridge.json` is currently a reference configuration; runtime server settings are controlled by the environment variables and extension settings above.
+
+## Security boundary
+
+The bridge launches coding agents with write-capable permissions, so it must be treated as a local execution boundary.
+
+Current protections include:
+
+- loopback binding by default (`127.0.0.1`)
+- refusal to bind to non-loopback addresses unless `BRIDGE_ALLOW_REMOTE=1` is explicitly set
+- no permissive CORS headers
+- browser-origin requests rejected on `/v1/chat/completions`
+- request body size limits
+- validation of routing headers and workspace paths
+- webview Content Security Policy
+- managed-process ownership: the extension does not kill a bridge process it did not start
+
+Do **not** expose the bridge directly to a LAN or the public Internet. If remote access is added later, place a real authenticated transport boundary in front of it first.
+
+## Development
+
+Bridge checks and tests:
+
+```bash
+cd server
+npm run check
+npm test
+```
+
+Extension syntax check:
+
+```bash
+cd extension
+npm run check
+```
+
+The repository CI checks:
+
+- shell script syntax
+- server JavaScript syntax
+- bridge regression tests
+- dependency-free extension source syntax
+
+## Project status
+
+Open-Cursor is still early-stage. The current foundation now includes a hardened localhost boundary, reproducible installation, managed bridge lifecycle, status reporting, streaming-capable chat UI, and cancellation controls.
+
+The next priorities are:
+
+1. bind request disconnect/abort to the spawned CLI process
+2. stream child-process stdout directly through SSE
+3. add per-request execution timeouts and structured execution metadata
+4. improve collaborative orchestration so agents critique and refine each other's work instead of merely concatenating responses
+5. add an upgrade path and release packaging once the execution core stabilizes

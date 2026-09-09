@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 .env
 verification.json
+node_modules/
+bridge.log
+bridge.pid
+*.log
+
