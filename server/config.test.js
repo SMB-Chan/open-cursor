@@ -129,6 +129,27 @@ test("invalid environment overrides fail instead of silently falling back", () =
   );
 });
 
+test("goal loop environment is validated at configuration load and reported", () => {
+  assert.deepEqual(parseRuntimeConfig(sampleConfig(), {}).goal, {
+    maxRounds: 8, roundTimeoutMs: 600000,
+  });
+  const parsed = parseRuntimeConfig(sampleConfig(), {
+    BRIDGE_GOAL_MAX_ROUNDS: "3", BRIDGE_GOAL_ROUND_TIMEOUT_MS: "12000",
+  });
+  assert.deepEqual(parsed.goal, { maxRounds: 3, roundTimeoutMs: 12000 });
+  assert.ok(Object.isFrozen(parsed.goal));
+  assert.deepEqual(parsed.overrides, ["BRIDGE_GOAL_MAX_ROUNDS", "BRIDGE_GOAL_ROUND_TIMEOUT_MS"]);
+  for (const [name, values] of [
+    ["BRIDGE_GOAL_MAX_ROUNDS", ["0", "33", "4junk", "2.5", "NaN", "Infinity"]],
+    ["BRIDGE_GOAL_ROUND_TIMEOUT_MS", ["999", "3600001", "1000ms", "1000.5", "NaN", "Infinity"]],
+  ]) {
+    for (const value of values) {
+      assert.throws(() => parseRuntimeConfig(sampleConfig(), { [name]: value }),
+        (error) => error instanceof RuntimeConfigError && error.message.includes(name));
+    }
+  }
+});
+
 test("runtime defaults populate missing process environment without replacing overrides", () => {
   const parsed = parseRuntimeConfig(sampleConfig(), {}, "/home/demo");
   const env = { BRIDGE_PORT: "7777" };

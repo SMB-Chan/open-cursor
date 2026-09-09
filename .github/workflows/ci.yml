@@ -66,3 +66,16 @@ jobs:
 
       - name: Check runtime configuration JSON
         run: node -e 'const fs=require("fs"); for (const file of ["config/bridge.json","config/config.schema.json"]) JSON.parse(fs.readFileSync(file,"utf8"));'
+
+      - name: Build deb package
+        run: |
+          bash scripts/build-deb.sh dist
+          dpkg-deb --info dist/open-cursor_*_amd64.deb >/dev/null
+          test -n "$(dpkg-deb --contents dist/open-cursor_*_amd64.deb | grep /opt/open-cursor/server/index.js)"
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-cursor-deb
+          path: dist/open-cursor_*_amd64.deb
+          retention-days: 14

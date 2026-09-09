@@ -38,7 +38,7 @@ test("sessionIdFromRun prefers stderr over other fields", () => {
   assert.equal(sessionIdFromRun(null), null);
 });
 
-test("parseGoalRoundStatus takes the LAST marker and defaults to continue", () => {
+test("parseGoalRoundStatus accepts a final marker and defaults to continue", () => {
   assert.equal(parseGoalRoundStatus("work done\nGOAL_COMPLETE").status, "complete");
   assert.equal(parseGoalRoundStatus("GOAL_COMPLETE\nthen chatter\nGOAL_BLOCKED").status, "blocked");
   assert.equal(parseGoalRoundStatus("GOAL_BLOCKED\nmore work\nGOAL_COMPLETE").status, "complete");
@@ -46,6 +46,30 @@ test("parseGoalRoundStatus takes the LAST marker and defaults to continue", () =
   assert.equal(parseGoalRoundStatus("").status, "continue");
   assert.equal(parseGoalRoundStatus(undefined).status, "continue");
   assert.equal(parseGoalRoundStatus("no marker but mentions GOAL_COMPLETE_INLINE").status, "continue");
+});
+
+test("goal status ignores examples, code blocks and non-final markers", () => {
+  const examples = [
+    "GOAL_COMPLETE\nTests are still failing.",
+    "GOAL_BLOCKED\nTrying another approach.",
+    "```text\nGOAL_COMPLETE\n```",
+    "```text\nGOAL_COMPLETE",
+    "~~~\nGOAL_BLOCKED\n~~~",
+    "````text\n```\nGOAL_COMPLETE",
+    "~~~text\n```\nGOAL_COMPLETE",
+    "> GOAL_COMPLETE",
+    "    GOAL_COMPLETE",
+    "\tGOAL_COMPLETE",
+    "GOAL_COMPLETE_INLINE",
+  ];
+  for (const content of examples) {
+    assert.equal(parseGoalRoundStatus(content).status, "continue", content);
+    assert.equal(stripGoalMarker(content), content.trim(), content);
+  }
+  const report = "Example:\n```\nGOAL_BLOCKED\n```\nVerified tests.\nGOAL_COMPLETE\n \n";
+  assert.equal(parseGoalRoundStatus(report).status, "complete");
+  assert.equal(stripGoalMarker(report), "Example:\n```\nGOAL_BLOCKED\n```\nVerified tests.");
+  assert.equal(parseGoalRoundStatus("Verified.\r\nGOAL_COMPLETE\r\n").status, "complete");
 });
 
 test("models append explanations to the marker line; they still count", () => {
@@ -92,19 +116,24 @@ test("buildGoalRoundPrompt stays tiny and references the previous outcome", () =
   assert.match(blocked, /reported being blocked/);
 });
 
-test("goalLoopConfig clamps overrides and honors env bounds", () => {
+test("goalLoopConfig rejects invalid overrides without silently changing budgets", () => {
   const base = goalLoopConfig();
   assert.equal(base.maxRounds, 8);
   assert.ok(base.roundTimeoutMs >= 1000);
 
-  assert.equal(goalLoopConfig({ maxRounds: 99 }).maxRounds, 32);
-  assert.equal(goalLoopConfig({ maxRounds: 0 }).maxRounds, 1);
+  for (const maxRounds of [99, 0, -1, 1.5, NaN, Infinity, "4", null]) {
+    assert.throws(() => goalLoopConfig({ maxRounds }), /goal.maxRounds/);
+  }
+  for (const roundTimeoutMs of [0, 999, 3600001, 1000.5, NaN, Infinity, "1000", null]) {
+    assert.throws(() => goalLoopConfig({ roundTimeoutMs }), /goal.roundTimeoutMs/);
+  }
   assert.equal(goalLoopConfig({ maxRounds: 4 }).maxRounds, 4);
+  assert.equal(goalLoopConfig({ roundTimeoutMs: 1000 }).roundTimeoutMs, 1000);
+  assert.equal(goalLoopConfig({ roundTimeoutMs: 3600000 }).roundTimeoutMs, 3600000);
 });
 
 test("codexCliSupportsResume detects the resume subcommand without running an agent", async () => {
-  const supported = await codexCliSupportsResume(process.env.CODEX_BIN || "codex");
-  assert.equal(typeof supported, "boolean");
+  assert.equal(await codexCliSupportsResume("/nonexistent/open-cursor-test-codex"), false);
 });
 
 test("readGoalStatus returns null safely without a thread or sqlite3", async () => {

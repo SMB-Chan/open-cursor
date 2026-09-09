@@ -52,6 +52,8 @@ Open-Cursor 2.3 changes collaborative mode to:
 
 Only Codex is intentionally given the actual workspace for the write phases. Automatic Gemini planning/review receives a bounded context pack and runs from a temporary working directory instead of the project directory.
 
+Within one bridge process, a workspace accepts only one chat execution at a time. Overlapping requests receive HTTP 409 before streaming starts and can be retried after the active request finishes. The reservation covers initial receipts, all agent phases, and final receipts; disconnects keep it held until the running agent settles. All routing modes participate so planning snapshots stay consistent. Symlink aliases and subdirectories of the same Git worktree share a reservation, while separate worktrees remain independent. For non-Git directories, parent/child paths conflict. These reservations do not coordinate separate bridge processes or external editors.
+
 This is **not an operating-system sandbox**. A detached working directory reduces accidental workspace coupling and avoids passing the workspace path as the working directory, but the upstream CLI still runs with the permissions of the local user. Do not treat it as a security boundary against a malicious local process or compromised CLI.
 
 ## Repository context pack
@@ -90,6 +92,22 @@ These are defense-in-depth controls, not a guarantee that arbitrary secrets can 
 The launcher/install scripts also account for common GUI-session PATH differences, including user-local binaries and typical NVM installations.
 
 ## Install
+
+### Debian/Ubuntu package
+
+```bash
+bash scripts/build-deb.sh          # or grab the CI artifact
+sudo dpkg -i dist/open-cursor_*_amd64.deb
+```
+
+The deb installs `/opt/open-cursor` (read-only payload), `/usr/local/bin/open-cursor*`
+commands, and the desktop entry with all actions. Runtime state (logs, pids,
+tokens, execution state) goes to `~/.local/state/open-cursor`, so the package
+never writes into its own install prefix. Self-update via git is disabled in
+this mode — update with `sudo dpkg -i` of a newer build (CI publishes an
+artifact on every push). Requires `nodejs (>= 18)`, `git`, `curl`.
+
+### Git checkout (symlink layout, supports in-app self-update)
 
 ```bash
 git clone https://github.com/SMB-Chan/open-cursor.git
@@ -216,6 +234,8 @@ Legacy shell-managed bridge stop:
 Goal mode drives the Codex **goals subsystem** from the bridge: round 1 starts a `codex exec` thread with the goal contract (work autonomously, no commits unless asked, end every response with a standalone `GOAL_COMPLETE` or `GOAL_BLOCKED` status line). Every later round resumes the SAME thread with `codex exec resume <session-id>` so the agent keeps its own memory, and the loop continues until the model declares completion, reports a blocker, or the round budget is exhausted. The thread id is parsed from the codex stderr header, the final payload lists every round, and exhausted runs print the exact `codex exec resume <id>` command to continue later.
 
 Environment knobs: `BRIDGE_GOAL_MAX_ROUNDS` (default 8, max 32) and `BRIDGE_GOAL_ROUND_TIMEOUT_MS` (default 10 minutes per round). Auto routing selects goal mode only on explicit goal/loop intent ("goal loop", "iterate until done", 「目標達成まで」「完了まで繰り返」); otherwise it stays on codex/collaborative.
+
+Goal status is accepted only on the final non-empty line outside code blocks; marker examples elsewhere in the report are preserved and do not stop execution. The round timeout applies to both fresh and resumed sessions, independently of the general agent timeout. Round counts must be integers from 1 to 32, and round timeouts must be integers from 1,000 to 3,600,000 milliseconds. Invalid environment values fail bridge startup instead of silently using defaults. A failed or timed-out round stops the loop.
 
 Automatic routing recognizes common English and Japanese analysis, implementation, verification, and continuation terms. Explicit routing takes precedence. Auto treats side effects as a hard capability constraint: an implementation request is never reported as completed through MiMo, and a failed/partially completed writer run is never silently retried as a response-only success.
 

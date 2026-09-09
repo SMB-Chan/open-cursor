@@ -103,7 +103,7 @@
     }
   },
   "scripts": {
-    "check": "node --check src/extension.js && node --check src/sse.js && node --check src/receipt.js && node --check src/markdown.js && node --check src/sse.test.js && node --check src/receipt.test.js && node --check src/markdown.test.js",
-    "test": "node --test src/sse.test.js src/receipt.test.js src/markdown.test.js"
+    "check": "node --check src/extension.js && node --check src/chat-html.js && node --check src/chat-webview.js && node --check src/sse.js && node --check src/receipt.js && node --check src/markdown.js && node --check src/sse.test.js && node --check src/receipt.test.js && node --check src/markdown.test.js && node --check src/webview.test.js",
+    "test": "node --test src/sse.test.js src/receipt.test.js src/markdown.test.js src/webview.test.js"
   }
 }

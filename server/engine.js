@@ -148,22 +148,13 @@ function runProcess({
   return new Promise((resolvePromise, rejectPromise) => {
     const executionId = randomUUID();
     const stdio = stdinText !== undefined ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"];
+    const processGroup = process.platform !== "win32";
     const child = spawn(command, args, {
       cwd: cwd || process.cwd(),
       env,
       stdio,
       windowsHide: true,
-    });
-
-    if (stdinText !== undefined && child.stdin) {
-      child.stdin.write(stdinText);
-      child.stdin.end();
-    }
-
-    activeProcesses.set(child, {
-      id: executionId,
-      agent,
-      startedAt: Date.now(),
+      detached: processGroup,
     });
 
     child.stdout.setEncoding("utf8");
@@ -176,20 +167,27 @@ function runProcess({
     let aborted = false;
     let timedOut = false;
     let outputExceeded = false;
+    let inputError = null;
+    let callbackError = null;
+    let terminating = false;
     let forceKillTimer = null;
 
-    const terminate = () => {
-      if (child.exitCode !== null || child.signalCode) return;
+    const kill = (signalName) => {
       try {
-        child.kill("SIGTERM");
+        // Each POSIX agent owns a new process group. The leader may already
+        // have exited while its descendants still hold pipes or write files.
+        if (processGroup && child.pid) process.kill(-child.pid, signalName);
+        else if (child.exitCode === null && !child.signalCode) child.kill(signalName);
       } catch {}
+    };
+
+    const terminate = () => {
+      if (settled || terminating) return;
+      terminating = true;
+      kill("SIGTERM");
       if (!forceKillTimer) {
         forceKillTimer = setTimeout(() => {
-          if (child.exitCode === null && !child.signalCode) {
-            try {
-              child.kill("SIGKILL");
-            } catch {}
-          }
+          kill("SIGKILL");
         }, KILL_GRACE_MS);
         forceKillTimer.unref?.();
       }
@@ -199,6 +197,13 @@ function runProcess({
       aborted = true;
       terminate();
     };
+
+    activeProcesses.set(child, {
+      id: executionId,
+      agent,
+      startedAt: Date.now(),
+      stop: onAbort,
+    });
 
     signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -233,7 +238,13 @@ function runProcess({
 
       if (kind === "stdout") stdout += text;
       else stderr += text;
-      callback?.(text);
+      if (callbackError) return;
+      try {
+        callback?.(text);
+      } catch (error) {
+        callbackError = error;
+        terminate();
+      }
     };
 
     child.stdout.on("data", (text) => consumeOutput("stdout", text, onStdout));
@@ -241,6 +252,9 @@ function runProcess({
 
     child.once("error", (error) => settle(rejectPromise, error));
     child.once("close", (code, signalCode) => {
+      // Closing the leader's stdio is not proof that its commands stopped.
+      // Kill remaining group members before releasing the workspace to a new run.
+      if (terminating) kill("SIGKILL");
       if (aborted) {
         settle(rejectPromise, new ExecutionAbortedError("Agent execution cancelled"));
         return;
@@ -256,11 +270,25 @@ function runProcess({
         );
         return;
       }
+      if (callbackError) {
+        settle(rejectPromise, callbackError);
+        return;
+      }
+      if (inputError && code === 0) {
+        settle(rejectPromise, new HttpError(502, `Agent closed prompt input before delivery: ${inputError.code || inputError.message}`));
+        return;
+      }
 
       const raw = stdout.trim() || stderr.trim();
-      const content = transformContent
-        ? transformContent(raw, { stdout, stderr, code, signal: signalCode })
-        : raw;
+      let content;
+      try {
+        content = transformContent
+          ? transformContent(raw, { stdout, stderr, code, signal: signalCode })
+          : raw;
+      } catch (error) {
+        settle(rejectPromise, error);
+        return;
+      }
 
       settle(resolvePromise, {
         content,
@@ -272,10 +300,20 @@ function runProcess({
         executionId,
       });
     });
+
+    if (stdinText !== undefined && child.stdin) {
+      // An early CLI exit (e.g. auth failure) can close stdin during delivery.
+      // Handle EPIPE without crashing the bridge; retain nonzero CLI diagnostics.
+      child.stdin.on("error", (error) => {
+        inputError = error;
+        terminate();
+      });
+      child.stdin.end(stdinText);
+    }
   });
 }
 
-function runCodexSession({ threadId, forkFrom, prompt, cwd, model, signal, onChunk } = {}) {
+function runCodexSession({ threadId, forkFrom, prompt, cwd, model, signal, onChunk, timeoutMs } = {}, execute = runProcess) {
   const args = ["exec"];
   if (threadId || forkFrom) {
     // `codex exec resume|fork <id>` accepts a much smaller option set than a
@@ -289,7 +327,7 @@ function runCodexSession({ threadId, forkFrom, prompt, cwd, model, signal, onChu
   }
   args.push("--skip-git-repo-check", "-");
 
-  return runProcess({
+  return execute({
     agent: "codex",
     command: CODEX_BIN,
     args,
@@ -297,6 +335,7 @@ function runCodexSession({ threadId, forkFrom, prompt, cwd, model, signal, onChu
     signal,
     stdinText: prompt,
     onStdout: onChunk,
+    timeoutMs,
     env: { ...process.env, CODEX_HOME, OPENAI_API_KEY: "" },
   });
 }
@@ -333,15 +372,18 @@ function runCodex(prompt, { cwd, model, signal, onChunk } = {}) {
 // status line, which the bridge parses — this mirrors the Codex goals
 // subsystem (active/complete/blocked statuses) without depending on
 // version-specific CLI subcommands.
-async function runGoalLoop(prompt, { cwd, model, signal, onEvent } = {}) {
-  const { maxRounds } = goalLoopConfig();
+async function runGoalLoop(prompt, { cwd, model, signal, onEvent } = {}, {
+  runSession = runCodexSession,
+  readStatus = readGoalStatus,
+} = {}) {
+  const { maxRounds, roundTimeoutMs } = goalLoopConfig();
   const rounds = [];
   let threadId = null;
   let lastStatus = "continue";
-  let lastContent = "";
   let lastCode = null;
 
   for (let round = 1; round <= maxRounds; round++) {
+    if (signal?.aborted) throw new ExecutionAbortedError("Goal loop cancelled before round start");
     const modelId = model || "gpt-6-astra";
     updateExecutionState({
       active: true,
@@ -368,19 +410,19 @@ async function runGoalLoop(prompt, { cwd, model, signal, onEvent } = {}) {
         ? buildGoalContract(prompt, { maxRounds, round, threadId })
         : buildGoalRoundPrompt({ round, maxRounds, lastStatus });
 
-    const run = await runCodexSession({
+    const run = await runSession({
       threadId: round === 1 ? null : threadId,
       prompt: roundPrompt,
       cwd,
       model: round === 1 ? model : undefined,
       signal,
+      timeoutMs: roundTimeoutMs,
       onChunk: (text) => onEvent?.({ text, agent: "codex", phase: "goal" }),
     });
 
     // A failed round ends the loop; no silent retries and no re-routing.
     const checked = requireSuccessfulAgent(run);
     lastCode = checked.code;
-    lastContent = checked.content;
     rounds.push({ round, content: checked.content });
 
     if (round === 1) {
@@ -397,7 +439,7 @@ async function runGoalLoop(prompt, { cwd, model, signal, onEvent } = {}) {
     lastStatus = parsed.status;
 
     if (parsed.status === "complete") {
-      const goalState = await readGoalStatus(threadId);
+      const goalState = await readStatus(threadId);
       return {
         content: [
           `## Goal loop (${rounds.length} round${rounds.length === 1 ? "" : "s"}) — COMPLETE`,
@@ -1462,13 +1504,7 @@ function selectAutoMode(taskType, availability) {
 }
 
 function stopActiveProcesses() {
-  for (const child of activeProcesses.keys()) {
-    if (child.exitCode === null && !child.signalCode) {
-      try {
-        child.kill("SIGTERM");
-      } catch {}
-    }
-  }
+  for (const execution of activeProcesses.values()) execution.stop();
 }
 
 export {
@@ -1490,6 +1526,8 @@ export {
   markExecutionIdle,
   orchestrate,
   runMiMo,
+  runCodexSession,
+  runGoalLoop,
   runProcess,
   selectAutoMode,
   stopActiveProcesses,

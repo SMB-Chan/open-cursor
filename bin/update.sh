@@ -27,8 +27,16 @@ fi
 BRIDGE_DIR="$HOME/.cursor-codex-bridge"
 if [ -L "$BRIDGE_DIR" ]; then
   REPO_DIR="$(readlink -f "$BRIDGE_DIR")"
-else
+elif [ -f "$BRIDGE_DIR/server/index.js" ] && [ -w "$BRIDGE_DIR" ]; then
   REPO_DIR="$BRIDGE_DIR"
+elif [ -d "/opt/open-cursor" ]; then
+  # Packaged install: /opt is root-owned, so self-update goes through apt.
+  echo "Packaged installation detected (/opt/open-cursor)."
+  echo "Self-update via git is disabled; update with: sudo apt upgrade open-cursor"
+  exit 0
+else
+  echo "No Open-Cursor installation found (expected $BRIDGE_DIR or /opt/open-cursor)."
+  exit 1
 fi
 
 RED='\033[0;31m'

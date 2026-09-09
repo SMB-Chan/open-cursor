@@ -7,7 +7,10 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
-export const STATE_DIR = join(homedir(), ".cursor-codex-bridge", "run");
+export const STATE_DIR =
+  process.env.OPEN_CURSOR_RUNTIME_DIR
+    ? join(process.env.OPEN_CURSOR_RUNTIME_DIR, "run")
+    : join(homedir(), ".cursor-codex-bridge", "run");
 export const STATE_FILE = join(STATE_DIR, "execution-state.json");
 
 let inMemoryState = {

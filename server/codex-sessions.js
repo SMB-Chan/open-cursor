@@ -13,6 +13,7 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { runtimeConfig, RuntimeConfigError } from "./config.js";
 
 const CODEX_HOME = join(homedir(), ".codex");
 
@@ -37,8 +38,7 @@ export const GOAL_BLOCKED_MARKER = "GOAL_BLOCKED";
 // The model must terminate every round with a status line. A status line is a
 // line whose trimmed content is the marker alone OR the marker followed by a
 // short explanation (models frequently append one despite instructions). The
-// LAST matching line wins; inline mentions mid-sentence never count because
-// the marker must be at line start.
+// Only the final non-empty line, outside a fenced code block, is authoritative.
 function markerKind(trimmedLine) {
   if (!trimmedLine) return null;
   if (trimmedLine === GOAL_COMPLETE_MARKER) return "complete";
@@ -56,11 +56,28 @@ function markerKind(trimmedLine) {
 
 function lastMarkerLine(content) {
   const lines = String(content || "").split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const kind = markerKind(lines[i].trim());
-    if (kind) return { kind, index: i };
+  let fence = null;
+  let last = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    last = null;
+    if (fence) {
+      const closing = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+      if (closing && closing[1][0] === fence[0] && closing[1].length >= fence.length) fence = null;
+      continue;
+    }
+    const opening = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (opening && !(opening[1][0] === "`" && opening[2].includes("`"))) {
+      fence = opening[1];
+      continue;
+    }
+    // Four spaces or a tab introduce indented code, not a status line.
+    if (/^( {4}|\t)/.test(line)) continue;
+    const kind = markerKind(line.trim());
+    if (kind) last = { kind, index: i };
   }
-  return null;
+  return last;
 }
 
 export function parseGoalRoundStatus(content) {
@@ -71,11 +88,11 @@ export function parseGoalRoundStatus(content) {
 }
 
 export function stripGoalMarker(content) {
-  return String(content || "")
-    .split("\n")
-    .filter((line) => markerKind(line.trim()) === null)
-    .join("\n")
-    .trim();
+  const text = String(content || "");
+  const found = lastMarkerLine(text);
+  const lines = text.split("\n");
+  if (found) lines.splice(found.index, 1);
+  return lines.join("\n").trim();
 }
 
 // Wrap a user goal in the loop contract. Every round receives the same contract
@@ -116,22 +133,17 @@ export function buildGoalRoundPrompt({ round, maxRounds, lastStatus, lastTail })
     .join("\n");
 }
 
-const GOAL_ENV_DEFAULTS = {
-  maxRounds: 8,
-  roundTimeoutMsDefault: 10 * 60 * 1000,
-};
-
 export function goalLoopConfig(overrides = {}) {
-  const envInt = (name, fallback, min, max) => {
-    const raw = process.env[name];
-    if (raw === undefined || raw === "") return fallback;
-    const parsed = Number.parseInt(raw, 10);
-    if (!Number.isInteger(parsed) || parsed < min || parsed > max) return fallback;
-    return parsed;
+  const bounded = (name, min, max) => {
+    const value = overrides[name] === undefined ? runtimeConfig.goal[name] : overrides[name];
+    if (!Number.isInteger(value) || value < min || value > max) {
+      throw new RuntimeConfigError(`goal.${name} must be an integer between ${min} and ${max}`);
+    }
+    return value;
   };
   return {
-    maxRounds: Math.max(1, Math.min(32, overrides.maxRounds ?? envInt("BRIDGE_GOAL_MAX_ROUNDS", GOAL_ENV_DEFAULTS.maxRounds, 1, 32))),
-    roundTimeoutMs: Math.max(1000, overrides.roundTimeoutMs ?? envInt("BRIDGE_GOAL_ROUND_TIMEOUT_MS", GOAL_ENV_DEFAULTS.roundTimeoutMsDefault, 1000, 60 * 60 * 1000)),
+    maxRounds: bounded("maxRounds", 1, 32),
+    roundTimeoutMs: bounded("roundTimeoutMs", 1000, 60 * 60 * 1000),
   };
 }
 

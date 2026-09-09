@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runtimeConfig } from "./config.js";
 
 import {
@@ -10,6 +13,8 @@ import {
   analyzeTask,
   buildPrompt,
   formatCollaborativeResult,
+  getBridgeStats,
+  handleChat,
   parseAgentSelection,
   parseBody,
   rejectBrowserOrigin,
@@ -23,6 +28,144 @@ import {
   buildRefinementPrompt,
   buildReviewPrompt,
 } from "./engine.js";
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function chatRequest(cwd, stream, dependencies) {
+  const req = new EventEmitter();
+  req.headers = { "x-workspace-path": cwd };
+  const res = new EventEmitter();
+  res.destroyed = false;
+  res.writableEnded = false;
+  res.body = "";
+  res.writeHead = (status) => { res.statusCode = status; };
+  res.write = (text) => { res.body += text; return true; };
+  res.end = (text = "") => { res.body += text; res.writableEnded = true; };
+  const result = handleChat(req, res, dependencies);
+  req.emit("data", Buffer.from(JSON.stringify({ model: "codex", stream,
+    messages: [{ role: "user", content: "Implement a parser fix" }],
+  })));
+  req.emit("end");
+  return { req, res, result };
+}
+
+const chatStubs = {
+  startReceipt: async () => ({}),
+  execute: async () => ({ agent: "codex", content: "Done", code: 0 }),
+  finishReceipt: async () => null,
+};
+
+async function chatWorkspace(t) {
+  const cwd = await mkdtemp(join(tmpdir(), "open-cursor-chat-lock-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  return cwd;
+}
+
+test("HTTP executions reserve the workspace from initial receipt through final receipt", async (t) => {
+  const cwd = await chatWorkspace(t);
+  for (const stream of [false, true]) {
+    for (const stage of ["startReceipt", "execute", "finishReceipt"]) {
+      const entered = deferred();
+      const proceed = deferred();
+      const first = chatRequest(cwd, stream, { ...chatStubs,
+        [stage]: async (...args) => { entered.resolve(); await proceed.promise; return chatStubs[stage](...args); },
+      });
+      try {
+        await entered.promise;
+        const before = getBridgeStats().requests;
+        let invoked = false;
+        const second = chatRequest(cwd, stream, {
+          ...chatStubs,
+          startReceipt: async () => { invoked = true; },
+          execute: async () => { invoked = true; },
+        });
+        await assert.rejects(second.result, { name: "WorkspaceBusyError", statusCode: 409 });
+        assert.equal(invoked, false);
+        assert.equal(second.res.statusCode, undefined, "conflict occurs before SSE headers");
+        assert.deepEqual(getBridgeStats().requests, before, "rejection does not alter active request metrics");
+        assert.equal(second.res.listenerCount("close"), 0);
+      } finally {
+        proceed.resolve();
+        await first.result;
+      }
+      assert.equal(first.res.statusCode, 200);
+      await chatRequest(cwd, stream, chatStubs).result;
+      assert.equal(getBridgeStats().requests.active, 0);
+    }
+  }
+});
+
+test("HTTP execution failures release reservations and finish request metrics", async (t) => {
+  const cwd = await chatWorkspace(t);
+  for (const stream of [false, true]) {
+    for (const stage of ["startReceipt", "execute", "finishReceipt"]) {
+      const error = new Error(`test failure at ${stage}`);
+      const before = getBridgeStats().requests.failed;
+      const request = chatRequest(cwd, stream, { ...chatStubs, [stage]: async () => { throw error; } });
+      if (stream && stage === "execute") {
+        await request.result;
+        assert.match(request.res.body, /test failure at execute/);
+      } else {
+        await assert.rejects(request.result, (actual) => actual === error);
+      }
+      assert.equal(getBridgeStats().requests.active, 0);
+      assert.equal(getBridgeStats().requests.failed, before + 1);
+      assert.equal(request.res.listenerCount("close"), 0);
+      await chatRequest(cwd, stream, chatStubs).result;
+    }
+  }
+});
+
+test("disconnect during initial receipt cancels execution without leaking the reservation", async (t) => {
+  const cwd = await chatWorkspace(t);
+  const entered = deferred();
+  const proceed = deferred();
+  let ran = false;
+  let receiptStatus;
+  const request = chatRequest(cwd, true, { ...chatStubs,
+    startReceipt: async () => { entered.resolve(); await proceed.promise; return {}; },
+    execute: async () => { ran = true; },
+    finishReceipt: async (_, options) => { receiptStatus = options.status; },
+  });
+  await entered.promise;
+  request.res.destroyed = true;
+  request.res.emit("close");
+  proceed.resolve();
+  await assert.rejects(request.result, { name: "AbortError" });
+  assert.equal(ran, false);
+  assert.equal(receiptStatus, "cancelled");
+  assert.equal(getBridgeStats().requests.active, 0);
+  await chatRequest(cwd, true, chatStubs).result;
+});
+
+test("disconnect keeps the workspace reserved until the agent has stopped", async (t) => {
+  const cwd = await chatWorkspace(t);
+  const entered = deferred();
+  const stopped = deferred();
+  const request = chatRequest(cwd, true, { ...chatStubs,
+    execute: async (_, { signal }) => {
+      entered.resolve();
+      await stopped.promise;
+      assert.equal(signal.aborted, true);
+      throw Object.assign(new Error("Agent stopped"), { name: "AbortError" });
+    },
+  });
+  try {
+    await entered.promise;
+    request.res.destroyed = true;
+    request.res.emit("close");
+    await assert.rejects(chatRequest(cwd, true, chatStubs).result, { statusCode: 409 });
+  } finally {
+    stopped.resolve();
+    await request.result;
+  }
+  assert.equal(getBridgeStats().requests.active, 0);
+  await chatRequest(cwd, true, chatStubs).result;
+});
 
 test("request bodies preserve Unicode at every network chunk boundary", async () => {
   const payload = { messages: [{ role: "user", content: "日本語の修正 🎉 café" }] };

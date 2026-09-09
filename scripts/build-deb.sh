@@ -185,6 +185,12 @@ EOF
 chmod 755 "$DEBIAN/postinst" "$DEBIAN/prerm"
 
 # ── build ────────────────────────────────────────────────────
+# Sanity: packaged launchers must resolve runtime via OPEN_CURSOR_RUNTIME_DIR
+grep -q "OPEN_CURSOR_RUNTIME_DIR" "$PAYLOAD/bin/open-cursor" || {
+  echo "ERROR: packaged open-cursor launcher lacks runtime-dir support" >&2
+  exit 1
+}
+
 echo "==> Building $DEB_NAME"
 mkdir -p "$OUT_DIR"
 fakeroot dpkg-deb --build --root-owner-group "$STAGING" "$OUT_DIR/$DEB_NAME" >/dev/null

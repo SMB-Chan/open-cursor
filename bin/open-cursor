@@ -5,14 +5,27 @@
 BRIDGE_DIR="$HOME/.cursor-codex-bridge"
 BRIDGE_PORT="${BRIDGE_PORT:-9876}"
 BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
-LOG_FILE="$BRIDGE_DIR/bridge.log"
-PID_FILE="$BRIDGE_DIR/bridge.pid"
+
+# Runtime directory: writable checkout (symlink install) or XDG state dir
+# (packaged install under /opt, which is root-owned and read-only).
+if [ -n "${OPEN_CURSOR_RUNTIME_DIR:-}" ]; then
+  RUNTIME_DIR="$OPEN_CURSOR_RUNTIME_DIR"
+elif [ -w "$BRIDGE_DIR" ] && [ -f "$BRIDGE_DIR/server/index.js" ]; then
+  RUNTIME_DIR="$BRIDGE_DIR"
+else
+  RUNTIME_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/open-cursor"
+  mkdir -p "$RUNTIME_DIR/run"
+fi
+export OPEN_CURSOR_RUNTIME_DIR="$RUNTIME_DIR"
+
+LOG_FILE="$RUNTIME_DIR/bridge.log"
+PID_FILE="$RUNTIME_DIR/bridge.pid"
 
 MOBILE_PORT="${MOBILE_PORT:-9880}"
 MOBILE_URL="http://127.0.0.1:$MOBILE_PORT"
-MOBILE_LOG="$BRIDGE_DIR/mobile.log"
-MOBILE_PID_FILE="$BRIDGE_DIR/mobile.pid"
-MOBILE_TOKEN_FILE="$BRIDGE_DIR/mobile.token"
+MOBILE_LOG="$RUNTIME_DIR/mobile.log"
+MOBILE_PID_FILE="$RUNTIME_DIR/mobile.pid"
+MOBILE_TOKEN_FILE="$RUNTIME_DIR/mobile.token"
 MOBILE_ALLOW_REMOTE="${MOBILE_ALLOW_REMOTE:-0}"
 MOBILE_ALLOW_EXEC="${MOBILE_ALLOW_EXEC:-0}"
 MOBILE_HOST="${MOBILE_HOST:-}"

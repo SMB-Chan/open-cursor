@@ -8,7 +8,10 @@ const os = require("node:os");
 const { execSync } = require("node:child_process");
 
 const BRIDGE_URL = process.env.BRIDGE_URL || "http://127.0.0.1:9876";
-const STATE_FILE = path.join(os.homedir(), ".cursor-codex-bridge", "run", "execution-state.json");
+const IS_PACKAGED = __dirname.startsWith("/opt/open-cursor/");
+const STATE_FILE = process.env.OPEN_CURSOR_RUNTIME_DIR
+  ? path.join(process.env.OPEN_CURSOR_RUNTIME_DIR, "run", "execution-state.json")
+  : path.join(os.homedir(), ".cursor-codex-bridge", "run", "execution-state.json");
 const REFRESH_INTERVAL_MS = 1000;
 
 // ANSI Colors

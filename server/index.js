@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import { runtimeConfig } from "./config.js";
 import { compressMessages } from "./compressor.js";
 import { getMonitorData } from "./monitor.js";
+import { acquireWorkspaceExecution } from "./workspace-lock.js";
 import {
   getBridgeStats,
   recordRequestEnd,
@@ -319,6 +320,7 @@ function bindRequestLifetime(req, res) {
 
   req.once("aborted", onAborted);
   res.once("close", onClose);
+  if (req.aborted || res.destroyed || res.writableEnded) onAborted();
 
   return {
     signal: controller.signal,
@@ -393,7 +395,11 @@ function createSseResponse(res, requestId) {
   };
 }
 
-async function handleChat(req, res) {
+async function handleChat(req, res, {
+  execute = orchestrate,
+  startReceipt = startWorkspaceReceipt,
+  finishReceipt = finishWorkspaceReceipt,
+} = {}) {
   rejectBrowserOrigin(req);
 
   const body = await parseBody(req);
@@ -406,21 +412,26 @@ async function handleChat(req, res) {
   assertAgentsEnabled(effectiveMode);
 
   const requestId = resolveRequestId(req.headers["x-open-cursor-request-id"]);
-  recordRequestStart(requestId, selection.mode || "auto");
-  const journal = shouldJournalWorkspace(selection.mode, taskInfo)
-    ? await startWorkspaceReceipt(cwd, {
-        id: requestId,
-        mode: selection.mode || "auto",
-      })
-    : null;
   const lifetime = bindRequestLifetime(req, res);
+  let release;
+  let started = false;
 
   try {
+    release = await acquireWorkspaceExecution(cwd, lifetime.signal);
+    recordRequestStart(requestId, selection.mode || "auto");
+    started = true;
+    const journal = shouldJournalWorkspace(selection.mode, taskInfo)
+      ? await startReceipt(cwd, { id: requestId, mode: selection.mode || "auto" })
+      : null;
+    if (lifetime.signal.aborted) {
+      await finishReceipt(journal, { status: "cancelled" });
+      throw new ExecutionAbortedError("Client disconnected before execution");
+    }
     if (stream) {
       const sse = createSseResponse(res, requestId);
       let completionAgent = selection.mode || "auto";
       try {
-        const result = await orchestrate(fullPrompt, {
+        const result = await execute(fullPrompt, {
           cwd,
           mode: selection.mode,
           model: selection.model,
@@ -434,14 +445,14 @@ async function handleChat(req, res) {
         });
         completionAgent = result.agent;
 
-        const workspaceReceipt = await finishWorkspaceReceipt(journal, { status: "completed" });
+        const workspaceReceipt = await finishReceipt(journal, { status: "completed" });
         sse.finish(responseModel(result.agent, selection.model), {
           agent: result.agent,
           active_executions: activeExecutionCount(),
           ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
         });
       } catch (error) {
-        const workspaceReceipt = await finishWorkspaceReceipt(journal, {
+        const workspaceReceipt = await finishReceipt(journal, {
           status: lifetime.signal.aborted ? "cancelled" : "failed",
           error,
         });
@@ -463,7 +474,7 @@ async function handleChat(req, res) {
 
     let completionAgent = selection.mode || "auto";
     try {
-      const result = await orchestrate(fullPrompt, {
+      const result = await execute(fullPrompt, {
         cwd,
         mode: selection.mode,
         model: selection.model,
@@ -471,7 +482,7 @@ async function handleChat(req, res) {
       });
       completionAgent = result.agent;
 
-      const workspaceReceipt = await finishWorkspaceReceipt(journal, { status: "completed" });
+      const workspaceReceipt = await finishReceipt(journal, { status: "completed" });
 
       sendJSON(
         res,
@@ -499,7 +510,7 @@ async function handleChat(req, res) {
       );
       recordRequestEnd(requestId, { status: "completed", agent: completionAgent });
     } catch (error) {
-      const workspaceReceipt = await finishWorkspaceReceipt(journal, {
+      const workspaceReceipt = await finishReceipt(journal, {
         status: lifetime.signal.aborted ? "cancelled" : "failed",
         error,
       });
@@ -511,8 +522,15 @@ async function handleChat(req, res) {
       if (workspaceReceipt) error.workspaceReceipt = workspaceReceipt;
       throw error;
     }
+  } catch (error) {
+    if (started) recordRequestEnd(requestId, {
+      status: lifetime.signal.aborted ? "cancelled" : "failed",
+      error: lifetime.signal.aborted ? null : error,
+    });
+    throw error;
   } finally {
     lifetime.cleanup();
+    release?.();
   }
 }
 
@@ -831,6 +849,7 @@ export {
   formatCollaborativeResult,
   getBridgeStats,
   getExecutionReceipt,
+  handleChat,
   orchestrate,
   parseAgentSelection,
   parseBody,

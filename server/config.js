@@ -163,6 +163,10 @@ function validateRawConfig(raw) {
 function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = DEFAULT_CONFIG_PATH) {
   validateRawConfig(raw);
   const overrides = [];
+  const goal = {
+    maxRounds: envInteger(env, "BRIDGE_GOAL_MAX_ROUNDS", 8, 1, 32, overrides),
+    roundTimeoutMs: envInteger(env, "BRIDGE_GOAL_ROUND_TIMEOUT_MS", 600000, 1000, 3600000, overrides),
+  };
 
   const bridge = {
     port: envInteger(env, "BRIDGE_PORT", raw.bridge.port, 1, 65535, overrides),
@@ -263,6 +267,7 @@ function parseRuntimeConfig(raw, env = process.env, home = homedir(), source = D
     overrides: Object.freeze([...new Set(overrides)]),
     bridge: Object.freeze(bridge),
     execution: Object.freeze(execution),
+    goal: Object.freeze(goal),
     context: Object.freeze(context),
     collaboration: Object.freeze({
       pipeline: Object.freeze([...raw.collaboration.pipeline]),

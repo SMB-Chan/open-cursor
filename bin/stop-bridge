@@ -1,6 +1,10 @@
 #!/bin/bash
 # Stop Open-Cursor Bridge & Mobile Dashboard
-PID_FILE="$HOME/.cursor-codex-bridge/bridge.pid"
+RUNTIME_DIR="${OPEN_CURSOR_RUNTIME_DIR:-$HOME/.cursor-codex-bridge}"
+if [ ! -w "$(dirname "$RUNTIME_DIR")" ] && [ ! -d "$RUNTIME_DIR" ]; then
+  RUNTIME_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/open-cursor"
+fi
+PID_FILE="$RUNTIME_DIR/bridge.pid"
 if [ -f "$PID_FILE" ]; then
   kill "$(cat "$PID_FILE")" 2>/dev/null && echo "Bridge stopped" || echo "Bridge not running"
   rm -f "$PID_FILE"
@@ -8,7 +12,7 @@ else
   echo "No Bridge PID file found"
 fi
 
-MOBILE_PID_FILE="$HOME/.cursor-codex-bridge/mobile.pid"
+MOBILE_PID_FILE="$RUNTIME_DIR/mobile.pid"
 if [ -f "$MOBILE_PID_FILE" ]; then
   kill "$(cat "$MOBILE_PID_FILE")" 2>/dev/null && echo "Mobile dashboard stopped" || echo "Mobile dashboard not running"
   rm -f "$MOBILE_PID_FILE"

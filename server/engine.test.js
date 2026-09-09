@@ -11,8 +11,93 @@ import {
   getResolvedModelsForMode,
   markExecutionIdle,
   orchestrate,
+  runCodexSession,
+  runGoalLoop,
 } from "./engine.js";
 import { getExecutionState, updateExecutionState } from "./monitor.js";
+import { goalLoopConfig } from "./codex-sessions.js";
+
+const goalTestSession = "01a086ec-e4c5-7902-90f1-6e24a631794e";
+const goalRun = (content, code = 0) => ({
+  content, code, agent: "codex", stderr: `session id: ${goalTestSession}`,
+});
+
+test("goal loop resumes the same session sequentially and passes the round timeout", async () => {
+  const calls = [];
+  let active = false;
+  const result = await runGoalLoop("Fix parser", { cwd: "/tmp", model: "test-model" }, {
+    runSession: async (options) => {
+      assert.equal(active, false);
+      active = true;
+      await Promise.resolve();
+      calls.push(options);
+      active = false;
+      return goalRun(calls.length === 1
+        ? "Example:\n```\nGOAL_COMPLETE\n```\nTests still need work."
+        : "Tests passed.\nGOAL_COMPLETE");
+    },
+    readStatus: async (id) => { assert.equal(id, goalTestSession); return null; },
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].threadId, null);
+  assert.equal(calls[1].threadId, goalTestSession);
+  assert.equal(calls[0].model, "test-model");
+  assert.equal(calls[1].model, undefined);
+  for (const options of calls) {
+    assert.equal(options.cwd, "/tmp");
+    assert.equal(options.timeoutMs, goalLoopConfig().roundTimeoutMs);
+  }
+  assert.match(result.content, /2 rounds.*COMPLETE/);
+  assert.match(result.content, /```\nGOAL_COMPLETE\n```/);
+});
+
+test("fresh and resumed Codex sessions forward their explicit timeout to the process runner", async () => {
+  for (const threadId of [null, goalTestSession]) {
+    await runCodexSession({ threadId, prompt: "Continue", cwd: "/tmp", timeoutMs: 1234 }, async (options) => {
+      assert.equal(options.timeoutMs, 1234);
+      assert.equal(options.stdinText, "Continue");
+      assert.equal(options.cwd, "/tmp");
+      assert.equal(options.args.includes("resume"), Boolean(threadId));
+      if (threadId) assert.ok(options.args.includes(threadId));
+      return goalRun("Done.");
+    });
+  }
+});
+
+test("goal loop stops on a blocker or exhausted round budget", async () => {
+  for (const blocked of [true, false]) {
+    let calls = 0;
+    const result = await runGoalLoop("Fix parser", {}, {
+      runSession: async () => { calls++; return goalRun(blocked ? "Need input.\nGOAL_BLOCKED" : "Still working."); },
+    });
+    assert.equal(calls, blocked ? 1 : goalLoopConfig().maxRounds);
+    assert.match(result.content, blocked ? /— BLOCKED/ : /ROUND BUDGET EXHAUSTED/);
+    if (!blocked) assert.ok(result.content.includes(`codex exec resume ${goalTestSession}`));
+  }
+});
+
+test("goal loop never retries failed, timed-out or unresumable rounds", async () => {
+  const timeout = Object.assign(new Error("round timed out"), { statusCode: 504 });
+  for (const outcome of [goalRun("GOAL_COMPLETE", 1), { ...goalRun("Still working"), stderr: "" }, timeout]) {
+    let calls = 0;
+    await assert.rejects(runGoalLoop("Fix parser", {}, {
+      runSession: async () => { calls++; if (outcome === timeout) throw timeout; return outcome; },
+    }), (error) => outcome === timeout ? error === timeout : error.statusCode === 502);
+    assert.equal(calls, 1);
+  }
+});
+
+test("goal loop cancellation prevents starting another round", async () => {
+  for (const preAborted of [true, false]) {
+    const controller = new AbortController();
+    if (preAborted) controller.abort();
+    let calls = 0;
+    await assert.rejects(runGoalLoop("Fix parser", { signal: controller.signal }, {
+      runSession: async () => { calls++; controller.abort(); return goalRun("Still working"); },
+    }), { name: "AbortError" });
+    assert.equal(calls, preAborted ? 0 : 1);
+  }
+});
 
 test("planning prompt treats repository context as untrusted detached data", () => {
   const prompt = buildPlanPrompt(
