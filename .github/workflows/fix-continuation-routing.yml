@@ -1,0 +1,37 @@
+name: Apply continuation routing correction
+
+on:
+  push:
+    branches: [fix/auto-routing-safety]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: ${{ !contains(github.event.head_commit.message, 'generated continuation routing correction') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: fix/auto-routing-safety
+          fetch-depth: 0
+
+      - name: Apply correction
+        run: node scripts/fix-continuation-routing.mjs
+
+      - name: Verify source and targeted tests
+        working-directory: server
+        run: |
+          node --check engine.js
+          node --test engine.test.js routing-safety.test.js
+
+      - name: Commit generated correction
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/engine.js
+          git commit -m "fix: apply generated continuation routing correction"
+          git push origin HEAD:fix/auto-routing-safety
