@@ -475,12 +475,20 @@ async function handleModels(req, res) {
   }
 
   if (codex.available) {
-    models.push({
-      id: `codex/${codexModel}`,
-      object: "model",
-      owned_by: "openai",
-      description: "Codex (ChatGPT subscription)",
-    });
+    models.push(
+      {
+        id: "codex",
+        object: "model",
+        owned_by: "openai",
+        description: `OpenAI ChatGPT (${codexModel}) via Codex CLI`,
+      },
+      {
+        id: `codex/${codexModel}`,
+        object: "model",
+        owned_by: "openai",
+        description: "Codex (ChatGPT subscription)",
+      }
+    );
   }
   if (antigravity.available) {
     models.push(
