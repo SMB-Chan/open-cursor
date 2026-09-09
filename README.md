@@ -17,12 +17,13 @@ Current backends:
 Cursor extension
     │
     │ owns bridge lifecycle when it starts the process
-    │ consumes live SSE deltas
+    │ consumes live SSE + agent/phase metadata
     │ aborts requests on Stop / panel close
     ▼
 127.0.0.1:9876
 Open-Cursor HTTP bridge
     │
+    ├── validated runtime configuration
     ├── request-scoped AbortSignal
     ├── timeout / output limits
     └── execution engine
@@ -30,7 +31,7 @@ Open-Cursor HTTP bridge
           └── Antigravity  → detached temporary working directory for automatic planning/review
 ```
 
-The HTTP layer lives in `server/index.js`, execution/orchestration in `server/engine.js`, and bounded repository context generation in `server/context.js`.
+The HTTP layer lives in `server/index.js`, execution/orchestration in `server/engine.js`, bounded repository context generation in `server/context.js`, and runtime configuration loading in `server/config.js`.
 
 ## Why collaborative mode is sequential
 
@@ -158,24 +159,71 @@ A model namespace that conflicts with `X-Agent-Mode` is rejected instead of sile
 
 An explicitly requested `antigravity` route is treated differently from automatic planning/review: it runs with the requested workspace as its working directory because the user deliberately selected that backend for the task. Automatic analysis routing uses the detached bounded-context path.
 
-## Streaming and cancellation
+## Streaming and execution UI
 
-`stream: true` sends child-process stdout through SSE as it arrives.
+`stream: true` sends child-process stdout through SSE as it arrives. SSE events also carry `open_cursor.agent` and `open_cursor.phase` metadata.
+
+The Cursor chat UI renders that metadata independently from the answer body. Collaborative runs expose **Plan / Implement / Review / Refine** progress and the active Gemini/Codex backend; pipeline runs expose **Plan / Implement**.
 
 The extension's **Stop** action aborts its fetch. The bridge propagates the disconnect/abort to all child processes owned by that request, sends `SIGTERM`, and escalates to `SIGKILL` after the grace period when necessary.
 
-Collaborative streams identify the active phase through Open-Cursor metadata, for example:
+A single `chatcmpl-*` ID is retained for the entire stream and is also exposed as `X-Open-Cursor-Request-Id`.
 
-```json
-{
-  "open_cursor": {
-    "agent": "antigravity",
-    "phase": "review"
-  }
-}
+## Runtime configuration
+
+`config/bridge.json` is the runtime source of default bridge settings. `config/config.schema.json` documents the same contract, while `server/config.js` performs startup validation before the execution engine is evaluated.
+
+Precedence is:
+
+```text
+config/bridge.json
+        ↓
+explicit environment-variable override
 ```
 
-A single `chatcmpl-*` ID is retained for the entire stream and is also exposed as `X-Open-Cursor-Request-Id`.
+A different configuration file can be selected with:
+
+```text
+BRIDGE_CONFIG_PATH=/absolute/path/to/bridge.json
+```
+
+Invalid configuration or invalid numeric/boolean environment overrides cause startup to fail instead of silently falling back.
+
+Important environment overrides include:
+
+```text
+BRIDGE_CONFIG_PATH
+BRIDGE_PORT
+BRIDGE_HOST
+BRIDGE_ALLOW_REMOTE
+BRIDGE_MAX_BODY_BYTES
+BRIDGE_MAX_OUTPUT_BYTES
+BRIDGE_AGENT_TIMEOUT_MS
+BRIDGE_KILL_GRACE_MS
+BRIDGE_CONTEXT_MAX_FILES
+BRIDGE_CONTEXT_MAX_BYTES
+BRIDGE_CONTEXT_FILE_BYTES
+BRIDGE_DIFF_MAX_BYTES
+CODEX_BIN
+AGY_BIN
+```
+
+The extension-managed bridge intentionally supplies its configured `BRIDGE_PORT` and safe loopback `BRIDGE_HOST`, so those names appear as runtime overrides when the extension starts the process.
+
+`GET /health` and `GET /v1/agents` report only the **names** of active environment overrides, never their values.
+
+### Safety invariants in configuration
+
+Several properties are validated as invariants rather than freely configurable knobs:
+
+- secret-like path omission must remain enabled
+- the workspace writer must remain Codex
+- automatic reviewer cwd must remain detached-temporary
+- pipeline order remains Plan → Implement
+- collaborative order remains Plan → Implement → Review → Refine
+- loopback/browser-origin/concurrent-writer protection declarations remain fixed in the schema
+
+`agents.codex.enabled` and `agents.antigravity.enabled` control model advertisement and routing availability. A request needing a disabled agent fails before the execution phase begins.
 
 ## Execution guardrails
 
@@ -205,26 +253,6 @@ GET  /v1/agents
 POST /v1/chat/completions
 ```
 
-Important environment variables:
-
-```text
-BRIDGE_PORT
-BRIDGE_HOST
-BRIDGE_MAX_BODY_BYTES
-BRIDGE_MAX_OUTPUT_BYTES
-BRIDGE_AGENT_TIMEOUT_MS
-BRIDGE_KILL_GRACE_MS
-BRIDGE_ALLOW_REMOTE
-BRIDGE_CONTEXT_MAX_FILES
-BRIDGE_CONTEXT_MAX_BYTES
-BRIDGE_CONTEXT_FILE_BYTES
-BRIDGE_DIFF_MAX_BYTES
-CODEX_BIN
-AGY_BIN
-```
-
-`config/bridge.json` documents the intended configuration shape and `config/config.schema.json` validates that reference file. Runtime server values are currently still driven primarily by environment variables and extension settings.
-
 ## Extension settings
 
 | Setting | Default | Purpose |
@@ -244,12 +272,12 @@ The bridge launches write-capable local coding agents. Treat it as a local execu
 Current protections include:
 
 - loopback binding by default
-- refusal to bind remotely unless `BRIDGE_ALLOW_REMOTE=1` is explicitly set
+- refusal to bind remotely unless both a non-loopback host and explicit remote opt-in are configured
 - no permissive CORS behavior
 - browser-origin execution requests rejected
 - request body/output/time limits
 - request-scoped cancellation and forced termination fallback
-- validation of routing, model namespace conflicts, message roles, and workspace paths
+- validation of runtime configuration, routing, model namespace conflicts, message roles, and workspace paths
 - secret-like path omission from generated context/review evidence
 - bounded context generation
 - detached temporary working directories for automatic Gemini planning/review
@@ -271,6 +299,7 @@ npm test
 
 Tests cover, among other things:
 
+- runtime configuration defaults/overrides/invariants
 - routing and request validation
 - real incremental child stdout
 - AbortSignal cancellation
@@ -281,23 +310,23 @@ Tests cover, among other things:
 - temporary reviewer-directory cleanup
 - collaboration prompt contracts for Plan / Implement / Review / Refine
 
-Extension check:
+Extension checks/tests:
 
 ```bash
 cd extension
 npm run check
+npm test
 ```
 
-CI also validates shell launcher syntax and reference configuration JSON.
+CI also validates shell launcher syntax and configuration JSON syntax.
 
 ## Current direction
 
-The execution core is now moving from “two agents attached to one chat” toward a role-based coding workflow.
+The project is now moving from “two agents attached to one chat” toward a maintainable local multi-agent execution platform with observable phases and one validated configuration model.
 
-Near-term priorities after 2.3 are:
+Near-term priorities are:
 
-1. render `agent` / `phase` metadata as first-class UI state in the Cursor chat panel
-2. add installation/upgrade smoke tests and release packaging
-3. promote `config/bridge.json` from reference configuration to validated runtime configuration
-4. improve changed-file context for newly-created/untracked files while keeping strict secret and size filtering
-5. add optional stronger OS-level isolation for detached reviewer processes when a supported sandbox facility is available
+1. add installation/upgrade smoke tests and release packaging
+2. include safe bounded excerpts for newly-created/untracked files in review context
+3. add optional stronger OS-level isolation for detached reviewer processes when a supported sandbox facility is available
+4. make automatic routing rules configurable without weakening the fixed write-safety invariants

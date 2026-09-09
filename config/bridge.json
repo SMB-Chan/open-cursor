@@ -2,7 +2,8 @@
   "$schema": "./config.schema.json",
   "bridge": {
     "port": 9876,
-    "host": "127.0.0.1"
+    "host": "127.0.0.1",
+    "allowRemote": false
   },
   "execution": {
     "agentTimeoutMs": 600000,
@@ -33,7 +34,7 @@
     },
     "antigravity": {
       "enabled": true,
-      "binary": "~/.local/bin/agy",
+      "binary": "agy",
       "authMode": "google-oauth",
       "billing": "NONE",
       "useG1Credits": false,

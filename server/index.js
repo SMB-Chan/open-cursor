@@ -10,6 +10,9 @@ import { isAbsolute, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
+// Load and project validated configuration before engine.js evaluates its
+// environment-backed execution constants.
+import { runtimeConfig } from "./config.js";
 import {
   AGENTS,
   ExecutionAbortedError,
@@ -26,19 +29,11 @@ import {
   stopActiveProcesses,
 } from "./engine.js";
 
-const PORT = envInt("BRIDGE_PORT", 9876, 1, 65535);
-const HOST = process.env.BRIDGE_HOST || "127.0.0.1";
-const MAX_BODY_BYTES = envInt("BRIDGE_MAX_BODY_BYTES", 1024 * 1024, 1024);
+const PORT = runtimeConfig.bridge.port;
+const HOST = runtimeConfig.bridge.host;
+const MAX_BODY_BYTES = runtimeConfig.execution.maxBodyBytes;
 const ROUTING_MODES = new Set(["codex", "antigravity", "collaborative", "pipeline"]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
-
-function envInt(name, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) return fallback;
-  return parsed;
-}
 
 function parseAgentSelection(modelName, headerMode) {
   const requestedModel = typeof modelName === "string" ? modelName.trim() : "";
@@ -80,6 +75,21 @@ function parseAgentSelection(modelName, headerMode) {
   }
 
   return { mode, model };
+}
+
+function requiredAgentsForMode(mode) {
+  if (mode === "codex") return ["codex"];
+  if (mode === "antigravity") return ["antigravity"];
+  if (mode === "pipeline" || mode === "collaborative") return ["codex", "antigravity"];
+  return [];
+}
+
+function assertAgentsEnabled(mode) {
+  for (const agent of requiredAgentsForMode(mode)) {
+    if (!runtimeConfig.agents[agent]?.enabled) {
+      throw new HttpError(503, `${agent} is disabled by runtime configuration`);
+    }
+  }
 }
 
 async function resolveWorkspacePath(rawPath) {
@@ -302,6 +312,9 @@ async function handleChat(req, res) {
   const fullPrompt = buildPrompt(body.messages || []);
   const cwd = await resolveWorkspacePath(req.headers["x-workspace-path"]);
   const selection = parseAgentSelection(body.model || "", req.headers["x-agent-mode"]);
+  const effectiveMode = selection.mode || analyzeTask(fullPrompt).routing;
+  assertAgentsEnabled(effectiveMode);
+
   const requestId = `chatcmpl-${randomUUID()}`;
   const lifetime = bindRequestLifetime(req, res);
 
@@ -369,27 +382,40 @@ async function handleChat(req, res) {
   }
 }
 
+async function agentStatus(key) {
+  const configured = runtimeConfig.agents[key];
+  const authenticated = configured.enabled ? await AGENTS[key].authCheck() : false;
+  return {
+    enabled: configured.enabled,
+    authenticated,
+    available: configured.enabled && authenticated,
+  };
+}
+
 async function handleModels(req, res) {
   const codexModel = await getCodexModel();
-  const codexAuth = await AGENTS.codex.authCheck();
-  const agyAuth = await AGENTS.antigravity.authCheck();
+  const codex = await agentStatus("codex");
+  const antigravity = await agentStatus("antigravity");
 
-  const models = [
-    {
-      id: "collaborative",
-      object: "model",
-      owned_by: "bridge",
-      description: "Gemini plans/reviews; Codex implements/refines sequentially",
-    },
-    {
-      id: "pipeline",
-      object: "model",
-      owned_by: "bridge",
-      description: "Detached Gemini analysis → Codex implementation",
-    },
-  ];
+  const models = [];
+  if (codex.available && antigravity.available) {
+    models.push(
+      {
+        id: "collaborative",
+        object: "model",
+        owned_by: "bridge",
+        description: "Gemini plans/reviews; Codex implements/refines sequentially",
+      },
+      {
+        id: "pipeline",
+        object: "model",
+        owned_by: "bridge",
+        description: "Detached Gemini analysis → Codex implementation",
+      }
+    );
+  }
 
-  if (codexAuth) {
+  if (codex.available) {
     models.push({
       id: `codex/${codexModel}`,
       object: "model",
@@ -397,7 +423,7 @@ async function handleModels(req, res) {
       description: "Codex (ChatGPT subscription)",
     });
   }
-  if (agyAuth) {
+  if (antigravity.available) {
     models.push(
       {
         id: "antigravity/pro",
@@ -426,10 +452,13 @@ async function handleModels(req, res) {
 async function handleAgents(req, res) {
   const agents = {};
   for (const [key, agent] of Object.entries(AGENTS)) {
+    const status = await agentStatus(key);
     agents[key] = {
       name: agent.name,
-      authenticated: await agent.authCheck(),
-      strengths: agent.strengths,
+      enabled: status.enabled,
+      authenticated: status.authenticated,
+      available: status.available,
+      strengths: runtimeConfig.agents[key].strengths,
     };
   }
   sendJSON(res, 200, {
@@ -440,12 +469,15 @@ async function handleAgents(req, res) {
       active: activeExecutionCount(),
       ...executionConfig(),
     },
+    configuration: {
+      env_overrides: runtimeConfig.overrides,
+    },
   });
 }
 
 async function handleHealth(req, res) {
-  const codexAuth = await AGENTS.codex.authCheck();
-  const agyAuth = await AGENTS.antigravity.authCheck();
+  const codex = await agentStatus("codex");
+  const antigravity = await agentStatus("antigravity");
 
   sendJSON(res, 200, {
     status: "ok",
@@ -456,9 +488,20 @@ async function handleHealth(req, res) {
       active: activeExecutionCount(),
       ...executionConfig(),
     },
+    configuration: {
+      env_overrides: runtimeConfig.overrides,
+    },
     agents: {
-      codex: { available: codexAuth, source: "ChatGPT subscription" },
-      antigravity: { available: agyAuth, source: "Gemini AI Pro subscription" },
+      codex: {
+        enabled: codex.enabled,
+        available: codex.available,
+        source: "ChatGPT subscription",
+      },
+      antigravity: {
+        enabled: antigravity.enabled,
+        available: antigravity.available,
+        source: "Gemini AI Pro subscription",
+      },
     },
   });
 }
@@ -490,10 +533,10 @@ const server = createServer(async (req, res) => {
 });
 
 function startServer() {
-  if (!LOOPBACK_HOSTS.has(HOST) && process.env.BRIDGE_ALLOW_REMOTE !== "1") {
+  if (!LOOPBACK_HOSTS.has(HOST) && !runtimeConfig.bridge.allowRemote) {
     throw new Error(
       `Refusing to bind execution bridge to non-loopback host ${HOST}. ` +
-        "Set BRIDGE_ALLOW_REMOTE=1 only if you provide an external authentication boundary."
+        "Set bridge.allowRemote=true or BRIDGE_ALLOW_REMOTE=1 only behind an authenticated transport boundary."
     );
   }
 
@@ -514,9 +557,12 @@ function startServer() {
   process.once("SIGTERM", shutdown);
 
   server.listen(PORT, HOST, async () => {
-    const codexAuth = await AGENTS.codex.authCheck();
-    const agyAuth = await AGENTS.antigravity.authCheck();
+    const codex = await agentStatus("codex");
+    const antigravity = await agentStatus("antigravity");
     const execution = executionConfig();
+    const configMode = runtimeConfig.overrides.length
+      ? `bridge.json + ${runtimeConfig.overrides.length} env override(s)`
+      : "bridge.json";
 
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
@@ -524,10 +570,11 @@ function startServer() {
 ║            local · subscription-authenticated               ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Endpoint : http://${HOST}:${PORT}
-║  Codex    : ${codexAuth ? "READY" : "NOT AUTHENTICATED"}
-║  Gemini   : ${agyAuth ? "READY" : "NOT AUTHENTICATED"}
+║  Codex    : ${codex.available ? "READY" : codex.enabled ? "NOT AUTHENTICATED" : "DISABLED"}
+║  Gemini   : ${antigravity.available ? "READY" : antigravity.enabled ? "NOT AUTHENTICATED" : "DISABLED"}
 ║  Timeout  : ${execution.timeout_ms} ms
 ║  Max out  : ${execution.max_output_bytes} bytes
+║  Config   : ${configMode}
 ╚══════════════════════════════════════════════════════════════╝
 `);
   });
@@ -549,11 +596,13 @@ export {
   HttpError,
   activeExecutionCount,
   analyzeTask,
+  assertAgentsEnabled,
   buildPrompt,
   formatCollaborativeResult,
   orchestrate,
   parseAgentSelection,
   rejectBrowserOrigin,
+  requiredAgentsForMode,
   resolveWorkspacePath,
   runProcess,
   server,
