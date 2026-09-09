@@ -4,6 +4,12 @@
     "port": 9876,
     "host": "127.0.0.1"
   },
+  "execution": {
+    "agentTimeoutMs": 600000,
+    "killGraceMs": 1500,
+    "maxBodyBytes": 1048576,
+    "maxOutputBytes": 8388608
+  },
   "agents": {
     "codex": {
       "enabled": true,
@@ -18,23 +24,24 @@
       "authMode": "google-oauth",
       "billing": "NONE",
       "useG1Credits": false,
-      "strengths": ["analysis", "architecture", "research", "multimodal"]
+      "strengths": ["analysis", "architecture", "research", "multimodal", "web-search"]
     }
   },
   "routing": {
     "default": "collaborative",
     "rules": {
-      "analyze|research|explain|review|audit": "antigravity",
-      "implement|create|build|write|fix|debug|refactor": "codex",
-      "complex|multi-step": "collaborative",
-      "default": "collaborative"
-    }
+      "analysis": "antigravity",
+      "implementation": "codex",
+      "complex-multi-step": "collaborative"
+    },
+    "languages": ["en", "ja"]
   },
   "protection": {
-    "note": "All paths are OUTSIDE Cursor's directories to survive updates",
+    "note": "All paths are outside Cursor's managed application directories",
     "bridgeDir": "~/.cursor-codex-bridge/",
     "codexDir": "~/.codex/",
     "geminiDir": "~/.gemini/antigravity-cli/",
-    "cursorCanTouch": false
+    "loopbackOnlyByDefault": true,
+    "browserOriginExecutionDenied": true
   }
 }
