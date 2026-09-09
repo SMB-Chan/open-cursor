@@ -1,0 +1,72 @@
+{
+  "name": "open-cursor-bridge",
+  "displayName": "Open-Cursor Multi-Agent Bridge",
+  "description": "課金なしのマルチLLM協調コーディング — Codex + Antigravity",
+  "version": "2.0.0",
+  "publisher": "open-cursor",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "openCursor.startBridge",
+        "title": "Open-Cursor: Start Bridge Server"
+      },
+      {
+        "command": "openCursor.stopBridge",
+        "title": "Open-Cursor: Stop Bridge Server"
+      },
+      {
+        "command": "openCursor.showStatus",
+        "title": "Open-Cursor: Show Agent Status"
+      },
+      {
+        "command": "openCursor.selectAgent",
+        "title": "Open-Cursor: Select Agent (Codex/Antigravity/Collaborative)"
+      },
+      {
+        "command": "openCursor.chat",
+        "title": "Open-Cursor: Chat with Agents"
+      }
+    ],
+    "configuration": {
+      "title": "Open-Cursor Bridge",
+      "properties": {
+        "openCursor.bridgePort": {
+          "type": "number",
+          "default": 9876,
+          "description": "Bridge server port"
+        },
+        "openCursor.defaultAgent": {
+          "type": "string",
+          "enum": [
+            "collaborative",
+            "pipeline",
+            "codex",
+            "antigravity"
+          ],
+          "default": "collaborative",
+          "description": "Default agent routing mode"
+        },
+        "openCursor.workspacePath": {
+          "type": "string",
+          "default": "",
+          "description": "Workspace path for agent context"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.js --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.136.0",
+    "esbuild": "^0.28.2"
+  }
+}
