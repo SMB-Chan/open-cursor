@@ -137,21 +137,43 @@ Bridge-only launch:
 
 The mobile dashboard is **localhost-only by default**. Starting Open-Cursor no longer exposes execution APIs to the LAN automatically.
 
-To opt in to phone/tablet access on a trusted LAN:
+Remote access requires **both authentication and a protected transport**. `MOBILE_ALLOW_REMOTE=1` by itself now fails closed.
+
+Native HTTPS mode:
 
 ```bash
-MOBILE_ALLOW_REMOTE=1 ~/.cursor-codex-bridge/bin/open-cursor
+MOBILE_ALLOW_REMOTE=1 \
+MOBILE_REMOTE_TRANSPORT=tls \
+MOBILE_TLS_CERT_FILE=/path/to/fullchain.pem \
+MOBILE_TLS_KEY_FILE=/path/to/privkey.pem \
+~/.cursor-codex-bridge/bin/open-cursor
 ```
+
+The certificate must be trusted by the phone/tablet and valid for the hostname or IP used in the pairing URL.
+
+Encrypted overlay/tunnel mode (for example Tailscale, a VPN, or an SSH/reverse-proxy tunnel):
+
+```bash
+MOBILE_ALLOW_REMOTE=1 \
+MOBILE_REMOTE_TRANSPORT=tunnel \
+MOBILE_HOST=100.x.y.z \
+~/.cursor-codex-bridge/bin/open-cursor
+```
+
+In `tunnel` mode Open-Cursor serves HTTP only inside the transport you explicitly declared trusted. The tunnel/VPN is responsible for encryption and peer authentication. Use `MOBILE_PUBLIC_URL` when the externally reachable tunnel URL differs from the local bind address.
 
 The launcher creates a 256-bit pairing token in `~/.cursor-codex-bridge/mobile.token` with mode `0600` and prints a pairing URL using `#token=...`. URL fragments are not sent in HTTP requests; the browser moves the token into session storage and sends it only in a Bearer authorization header.
 
-Arbitrary remote shell execution is a separate high-trust opt-in and remains disabled by default:
+Arbitrary shell execution is a separate high-trust opt-in and remains disabled by default:
 
 ```bash
-MOBILE_ALLOW_REMOTE=1 MOBILE_ALLOW_EXEC=1 ~/.cursor-codex-bridge/bin/open-cursor
+MOBILE_ALLOW_REMOTE=1 \
+MOBILE_REMOTE_TRANSPORT=tunnel \
+MOBILE_ALLOW_EXEC=1 \
+~/.cursor-codex-bridge/bin/open-cursor
 ```
 
-The dashboard uses plain HTTP. LAN mode should only be used on a trusted network or through an encrypted tunnel/VPN, and port 9880 must not be forwarded directly to the public Internet.
+Do not expose port 9880 directly to an untrusted network. A pairing token does not make plaintext HTTP safe against an active network attacker because the dashboard JavaScript itself could otherwise be modified in transit.
 
 Legacy shell-managed bridge stop:
 
