@@ -53,7 +53,7 @@ test("consumeSse forwards metadata-only final chunks without changing content", 
   const events = [];
   const response = streamingResponse([
     'data: {"choices":[{"delta":{"content":"answer"}}],"open_cursor":{"agent":"codex","phase":"refinement"}}\n\n',
-    'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"open_cursor":{"agent":"collaborative","active_executions":0}}\n\n',
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"open_cursor":{"agent":"collaborative","active_executions":0,"workspace_receipt":{"id":"chatcmpl-1","status":"completed","git":{"available":true,"newly_dirty_paths":["src/a.js"]}}}}\n\n',
     "data: [DONE]\n\n",
   ]);
 
@@ -62,4 +62,6 @@ test("consumeSse forwards metadata-only final chunks without changing content", 
   assert.equal(content, "answer");
   assert.equal(events.length, 2);
   assert.equal(events[1].metadata.active_executions, 0);
+  assert.equal(events[1].metadata.workspace_receipt.id, "chatcmpl-1");
+  assert.deepEqual(events[1].metadata.workspace_receipt.git.newly_dirty_paths, ["src/a.js"]);
 });
