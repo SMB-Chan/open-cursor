@@ -1,0 +1,47 @@
+name: Merge current main into execution receipts
+
+on:
+  push:
+    branches: [feat/write-execution-receipts]
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    if: ${{ !contains(github.event.head_commit.message, 'merge current main into execution receipts') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: feat/write-execution-receipts
+          fetch-depth: 0
+
+      - name: Merge current main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-ff --no-edit origin/main
+
+      - name: Verify server
+        working-directory: server
+        run: |
+          npm run check
+          npm test
+
+      - name: Verify extension
+        working-directory: extension
+        run: |
+          npm run check
+          npm test
+
+      - name: Verify shell and config
+        run: |
+          bash -n bin/install.sh bin/open-cursor bin/open-cursor-app bin/stop-bridge scripts/install-smoke-test.sh
+          node -e 'JSON.parse(require("fs").readFileSync("config/bridge.json","utf8")); JSON.parse(require("fs").readFileSync("config/config.schema.json","utf8"))'
+
+      - name: Push validated merge
+        run: git push origin HEAD:feat/write-execution-receipts
