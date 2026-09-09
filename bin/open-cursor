@@ -8,6 +8,27 @@ BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
 LOG_FILE="$BRIDGE_DIR/bridge.log"
 PID_FILE="$BRIDGE_DIR/bridge.pid"
 
+# ── Ensure PATH includes ~/.local/bin and Node.js ──
+
+export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
+if ! command -v node &>/dev/null; then
+  for n in "$HOME"/.nvm/versions/node/*/bin/node; do
+    if [ -x "$n" ]; then
+      export PATH="$(dirname "$n"):$PATH"
+    fi
+  done
+fi
+
+if ! command -v node &>/dev/null && [ -s "$HOME/.nvm/nvm.sh" ]; then
+  export NVM_DIR="$HOME/.nvm"
+  # shellcheck source=/dev/null
+  . "$HOME/.nvm/nvm.sh" --no-use 2>/dev/null || true
+  nvm use default &>/dev/null || nvm use stable &>/dev/null || true
+fi
+
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -28,9 +49,13 @@ is_bridge_running() {
 
 # Start bridge if not running
 if ! is_bridge_running; then
+  if [ -z "$NODE_BIN" ]; then
+    echo -e "${RED}Error: Node.js is not found in PATH or NVM.${NC}"
+    exit 1
+  fi
   echo -e "${YELLOW}Starting bridge server...${NC}"
   cd "$BRIDGE_DIR/server"
-  setsid node index.js > "$LOG_FILE" 2>&1 &
+  setsid "$NODE_BIN" index.js > "$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
 
   for i in $(seq 1 20); do

@@ -14,6 +14,16 @@
 
 set -euo pipefail
 
+export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
+if ! command -v node &>/dev/null; then
+  for n in "$HOME"/.nvm/versions/node/*/bin/node; do
+    if [ -x "$n" ]; then
+      export PATH="$(dirname "$n"):$PATH"
+    fi
+  done
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SOURCE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 BRIDGE_DIR="$HOME/.cursor-codex-bridge"
@@ -73,6 +83,13 @@ done
 # ── Step 1: Check prerequisites ──────────────────────────
 
 echo -e "${YELLOW}[1/6] Checking prerequisites...${NC}"
+
+if command -v node &>/dev/null; then
+  echo -e "  ${GREEN}✓${NC} Node.js found: $(node -v)"
+else
+  echo -e "  ${RED}✗${NC} Node.js not found. Please install Node.js 18+"
+  exit 1
+fi
 
 CODEX_OK=false
 AGY_OK=false
@@ -180,19 +197,66 @@ echo -e "  ${CYAN}ℹ${NC} Extension source lives OUTSIDE Cursor's managed direc
 echo ""
 echo -e "${YELLOW}[6/6] Creating startup configuration...${NC}"
 
+# Install scalable icon to user icon theme
+ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+mkdir -p "$ICON_DIR"
+cp "$BRIDGE_DIR/share/open-cursor.svg" "$ICON_DIR/open-cursor.svg"
+if command -v gtk-update-icon-cache &>/dev/null; then
+  gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+fi
+
 mkdir -p "$HOME/.local/share/applications"
-cat > "$HOME/.local/share/applications/open-cursor.desktop" << EOF
+DESKTOP_FILE="$HOME/.local/share/applications/open-cursor.desktop"
+cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Name=Open-Cursor
+Name[ja]=Open-Cursor
+GenericName=Multi-Agent Code Editor
+GenericName[ja]=マルチエージェント コードエディタ
 Comment=Multi-agent coding IDE (subscription-backed local bridge)
-Exec=$BRIDGE_DIR/bin/open-cursor-app
+Comment[ja]=課金なしのマルチLLM協調コーディングIDE — Codex + Antigravity
+Exec=$BRIDGE_DIR/bin/open-cursor-app %F
 Icon=$BRIDGE_DIR/share/open-cursor.svg
 Terminal=false
 Type=Application
 Categories=Development;IDE;
+Keywords=code;editor;ai;multi-agent;cursor;codex;gemini;
+StartupNotify=true
+StartupWMClass=Cursor
+MimeType=text/plain;inode/directory;application/x-cursor-workspace;
+Actions=new-window;stop-bridge;
+
+[Desktop Action new-window]
+Name=New Window
+Name[ja]=新しいウィンドウ
+Exec=$BRIDGE_DIR/bin/open-cursor-app --new-window %F
+
+[Desktop Action stop-bridge]
+Name=Stop Bridge Server
+Name[ja]=ブリッジサーバーを停止
+Exec=$BRIDGE_DIR/bin/stop-bridge
 EOF
 
-echo -e "  ${GREEN}✓${NC} Desktop entry created"
+chmod 644 "$DESKTOP_FILE"
+
+# Place desktop shortcut if Desktop directory exists
+for desktop_dir in "$HOME/デスクトップ" "$HOME/Desktop"; do
+  if [ -d "$desktop_dir" ]; then
+    SHORTCUT="$desktop_dir/Open-Cursor.desktop"
+    cp "$DESKTOP_FILE" "$SHORTCUT"
+    chmod 755 "$SHORTCUT"
+    if command -v gio &>/dev/null; then
+      gio set "$SHORTCUT" metadata::trusted true 2>/dev/null || true
+    fi
+    echo -e "  ${GREEN}✓${NC} Desktop shortcut: $SHORTCUT"
+  fi
+done
+
+if command -v update-desktop-database &>/dev/null; then
+  update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+fi
+
+echo -e "  ${GREEN}✓${NC} Desktop entry created: $DESKTOP_FILE"
 
 chmod +x "$BRIDGE_DIR/bin/open-cursor"
 chmod +x "$BRIDGE_DIR/bin/open-cursor-app"

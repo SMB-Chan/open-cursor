@@ -8,6 +8,28 @@ BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
 LOG_FILE="$BRIDGE_DIR/bridge.log"
 PID_FILE="$BRIDGE_DIR/bridge.pid"
 
+# ── Ensure PATH includes ~/.local/bin and Node.js (GUI session support) ──
+
+export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
+if ! command -v node &>/dev/null; then
+  # Auto-detect node from NVM if installed
+  for n in "$HOME"/.nvm/versions/node/*/bin/node; do
+    if [ -x "$n" ]; then
+      export PATH="$(dirname "$n"):$PATH"
+    fi
+  done
+fi
+
+if ! command -v node &>/dev/null && [ -s "$HOME/.nvm/nvm.sh" ]; then
+  export NVM_DIR="$HOME/.nvm"
+  # shellcheck source=/dev/null
+  . "$HOME/.nvm/nvm.sh" --no-use 2>/dev/null || true
+  nvm use default &>/dev/null || nvm use stable &>/dev/null || true
+fi
+
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+
 # ── Helpers ──────────────────────────────────────────────
 
 is_bridge_running() {
@@ -15,32 +37,40 @@ is_bridge_running() {
 }
 
 notify() {
+  local icon="$BRIDGE_DIR/share/open-cursor.svg"
+  if [ ! -f "$icon" ]; then
+    icon="co.anysphere.cursor"
+  fi
   if command -v notify-send &>/dev/null; then
-    notify-send -i "$BRIDGE_DIR/share/open-cursor.svg" "Open-Cursor" "$1" 2>/dev/null || true
+    notify-send -i "$icon" "Open-Cursor" "$1" 2>/dev/null || true
   fi
 }
 
 # ── Start bridge if not running ──────────────────────────
 
 if ! is_bridge_running; then
-  cd "$BRIDGE_DIR/server"
-  setsid node index.js > "$LOG_FILE" 2>&1 &
-  BRIDGE_PID=$!
-  echo "$BRIDGE_PID" > "$PID_FILE"
-
-  # Wait for startup (max 10s)
-  for i in $(seq 1 20); do
-    if is_bridge_running; then
-      break
-    fi
-    sleep 0.5
-  done
-
-  if is_bridge_running; then
-    notify "Bridge started on port $BRIDGE_PORT"
+  if [ -z "$NODE_BIN" ]; then
+    notify "Node.js が見つかりません。Node.js をインストールするか PATH を確認してください。"
+    echo "Error: Node.js not found in PATH" >&2
   else
-    notify "Bridge failed to start. Check $LOG_FILE"
-    exit 1
+    cd "$BRIDGE_DIR/server"
+    setsid "$NODE_BIN" index.js > "$LOG_FILE" 2>&1 &
+    BRIDGE_PID=$!
+    echo "$BRIDGE_PID" > "$PID_FILE"
+
+    # Wait for startup (max 10s)
+    for i in $(seq 1 20); do
+      if is_bridge_running; then
+        break
+      fi
+      sleep 0.5
+    done
+
+    if is_bridge_running; then
+      notify "ブリッジサーバーが起動しました（ポート $BRIDGE_PORT）"
+    else
+      notify "ブリッジサーバーの起動に失敗しました。$LOG_FILE を確認してください。"
+    fi
   fi
 else
   # Bridge already running, just update PID file
@@ -51,16 +81,18 @@ fi
 
 if command -v cursor &>/dev/null; then
   exec cursor "$@"
+elif [ -x /usr/bin/cursor ]; then
+  exec /usr/bin/cursor "$@"
+elif [ -x /usr/share/cursor/bin/cursor ]; then
+  exec /usr/share/cursor/bin/cursor "$@"
 elif [ -f /opt/Cursor/AppRun ]; then
   exec /opt/Cursor/AppRun "$@"
 elif [ -f /usr/share/applications/cursor.desktop ]; then
   gtk-launch cursor 2>/dev/null
-  # Keep bridge alive
   while is_bridge_running; do sleep 5; done
 else
-  # No Cursor found — just keep bridge alive and show status
-  notify "Bridge running at $BRIDGE_URL. Open Cursor manually."
+  notify "Cursor が見つかりません。手動で Cursor を起動してください。"
   echo "Open-Cursor bridge running at $BRIDGE_URL"
-  echo "Open Cursor and configure API to: $BRIDGE_URL/v1"
+  echo "Open Cursor manually and use the Open-Cursor extension."
   while is_bridge_running; do sleep 5; done
 fi
