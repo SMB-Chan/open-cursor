@@ -410,27 +410,27 @@
     <div class="tab-content section-pad" id="tab-git">
       <div class="card">
         <div class="card-title">
-          <span>🌿 Git ブランチ & 変更</span>
-          <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadGit()">更新</button>
+          <span>Git Branch & Changes</span>
+          <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadGit()">Refresh</button>
         </div>
         <div style="font-size: 13px; margin-bottom: 8px;">
-          ブランチ: <strong id="git-branch" style="color: var(--accent)">-</strong>
+          Branch: <strong id="git-branch" style="color: var(--accent)">-</strong>
         </div>
-        <div id="git-status-list">変更の読み込み中...</div>
+        <div id="git-status-list">Loading…</div>
       </div>
 
       <div class="card">
         <div class="card-title">
-          <span>📜 最近のコミット</span>
+          <span>Recent Commits</span>
         </div>
-        <div id="git-commits-list">読み込み中...</div>
+        <div id="git-commits-list">Loading…</div>
       </div>
 
       <div class="card">
         <div class="card-title">
-          <span>🔍 作業ツリー差分 (Git Diff)</span>
+          <span>Working Tree Diff</span>
         </div>
-        <div class="diff-view" id="git-diff-content">差分なし (Clean)</div>
+        <div class="diff-view" id="git-diff-content">No changes (clean)</div>
       </div>
     </div>
 
@@ -449,51 +449,51 @@
     <div class="tab-content section-pad" id="tab-status">
       <div class="card">
         <div class="card-title">
-          <span>📊 エージェント稼働状況</span>
-          <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadStatus()">更新</button>
+          <span>Agent Status</span>
+          <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadStatus()">Refresh</button>
         </div>
         <div style="display: flex; flex-direction: column; gap: 10px;">
           <div class="file-item">
-            <span>💻 OpenAI (ChatGPT / Codex)</span>
-            <span id="stat-codex" style="color: var(--accent-orange)">確認中...</span>
+            <span>OpenAI (ChatGPT / Codex)</span>
+            <span id="stat-codex" style="color: var(--accent-orange)">Checking…</span>
           </div>
           <div class="file-item">
-            <span>🧠 Google Gemini (Antigravity)</span>
-            <span id="stat-gemini" style="color: var(--accent-green)">利用可能 (Pro/Flash)</span>
+            <span>Google Gemini (Antigravity)</span>
+            <span id="stat-gemini" style="color: var(--accent-green)">Available</span>
           </div>
           <div class="file-item">
-            <span>🚀 Xiaomi MiMo</span>
-            <span id="stat-mimo" style="color: var(--accent-green)">利用可能 (v2.5-pro)</span>
+            <span>Xiaomi MiMo</span>
+            <span id="stat-mimo" style="color: var(--accent-green)">Available</span>
           </div>
         </div>
       </div>
 
       <div class="card">
-        <div class="card-title"><span>📡 サーバー情報</span></div>
+        <div class="card-title"><span>Server</span></div>
         <div style="font-size: 13px; display: flex; flex-direction: column; gap: 6px;">
-          <div>モバイル接続先: <code id="stat-ip">-</code></div>
-          <div>作業ディレクトリ: <code id="stat-dir">-</code></div>
-          <div>稼働時間: <span id="stat-uptime">-</span></div>
+          <div>Endpoint: <code id="stat-ip">-</code></div>
+          <div>Workspace: <code id="stat-dir">-</code></div>
+          <div>Uptime: <span id="stat-uptime">-</span></div>
         </div>
       </div>
     </div>
 
-    <!-- TAB 4: TERMINAL -->
+    <!-- TAB 5: TERMINAL -->
     <div class="tab-content section-pad" id="tab-term">
-      <div class="card-title">⚡ クイックコマンド</div>
+      <div class="card-title">Quick Commands</div>
       <div class="quick-actions">
-        <button class="action-btn" onclick="runCmd('git status -s')">📋 Git Status</button>
-        <button class="action-btn" onclick="runCmd('python3 verify_collaboration.py')">🧪 協調テスト</button>
-        <button class="action-btn" onclick="runCmd('git log -n 5 --oneline')">📜 最近のログ</button>
-        <button class="action-btn" onclick="runCmd('df -h /')">💾 ディスク残量</button>
+        <button class="action-btn" onclick="runCmd('git status -s')">Git Status</button>
+        <button class="action-btn" onclick="runCmd('git log -n 5 --oneline')">Recent Log</button>
+        <button class="action-btn" onclick="runCmd('df -h /')">Disk Usage</button>
+        <button class="action-btn" onclick="runCmd('ls -la')">List Files</button>
       </div>
 
-      <div class="card-title">💻 ターミナル出力</div>
-      <div class="term-box" id="term-output">コマンドの実行結果がここに表示されます...</div>
+      <div class="card-title">Terminal Output</div>
+      <div class="term-box" id="term-output">Run a command to see output here.</div>
 
       <div style="display: flex; gap: 8px;">
-        <input type="text" id="cmd-input" placeholder="コマンドを入力 (例: ls -la)" style="flex: 1; background: #0d1117; border: 1px solid var(--card-border); color: #fff; padding: 10px; border-radius: 8px; font-family: var(--font-mono); font-size: 13px;">
-        <button class="action-btn" style="background: var(--accent); color: #000;" onclick="submitCmd()">実行</button>
+        <input type="text" id="cmd-input" placeholder="Enter command (e.g. ls -la)" style="flex: 1; background: #0d1117; border: 1px solid var(--card-border); color: #fff; padding: 10px; border-radius: 8px; font-family: var(--font-mono); font-size: 13px;">
+        <button class="action-btn" style="background: var(--accent); color: #000;" onclick="submitCmd()">Run</button>
       </div>
     </div>
   </main>
@@ -560,7 +560,7 @@
       let response = await nativeFetch(input, withToken(pairingToken));
       if (response.status !== 401 || pairingDeclined) return response;
 
-      const entered = window.prompt('Open-Cursor Mobile pairing token を入力してください');
+      const entered = window.prompt('Enter pairing token');
       if (!entered || !entered.trim()) {
         pairingDeclined = true;
         return response;
@@ -674,7 +674,7 @@
 
         const statusList = document.getElementById('git-status-list');
         if (!data.status) {
-          statusList.innerHTML = '<span style="color: var(--accent-green)">✓ 作業ツリーはクリーンです</span>';
+          statusList.innerHTML = '<span style="color: var(--accent-green)">Working tree is clean</span>';
         } else {
           const lines = data.status.split('\n');
           statusList.innerHTML = lines.map(line => `<div class="file-item"><span>${escapeHtml(line)}</span></div>`).join('');
@@ -692,7 +692,7 @@
         }
 
         const diffEl = document.getElementById('git-diff-content');
-        diffEl.textContent = data.diff ? data.diff : '変更の差分はありません。';
+        diffEl.textContent = data.diff ? data.diff : 'No changes.';
       } catch (err) {
         console.error('Failed to load git info:', err);
       }
@@ -762,7 +762,7 @@
         const data = await res.json();
         document.getElementById('stat-ip').textContent = `http://${data.localIp}:${data.port}`;
         document.getElementById('stat-dir').textContent = data.workspace;
-        document.getElementById('stat-uptime').textContent = `${Math.floor(data.uptime / 60)} 分`;
+        document.getElementById('stat-uptime').textContent = `${Math.floor(data.uptime / 60)} min`;
 
         const shellEnabled = data.shellExecutionEnabled === true;
         document.querySelectorAll('#tab-term button, #cmd-input').forEach((el) => {
@@ -793,7 +793,7 @@
             document.getElementById('stat-mimo').style.color = 'var(--accent-orange)';
           }
         } else {
-          document.getElementById('stat-codex').textContent = '利用可能 (定額サブスク)';
+          document.getElementById('stat-codex').textContent = 'Available';
           document.getElementById('stat-codex').style.color = 'var(--accent-green)';
         }
       } catch (err) {
@@ -813,7 +813,7 @@
       if (!command) return;
 
       const output = document.getElementById('term-output');
-      output.textContent += `\n$ ${command}\n実行中...`;
+      output.textContent += `\n$ ${command}\nRunning…`;
       output.scrollTop = output.scrollHeight;
 
       try {
@@ -825,7 +825,7 @@
         const data = await res.json();
         output.textContent = `$ ${command}\n` + (data.stdout || '') + (data.stderr || '');
       } catch (err) {
-        output.textContent += `\nエラー: ${err.message}`;
+        output.textContent += `\nError: ${err.message}`;
       }
       output.scrollTop = output.scrollHeight;
     }
