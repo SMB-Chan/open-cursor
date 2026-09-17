@@ -17,7 +17,7 @@
       button.textContent = active ? "■" : "➤";
       button.style.background = active ? "var(--accent-red)" : "var(--accent)";
       button.disabled = Boolean(active?.signal.aborted);
-      const label = active?.signal.aborted ? "停止中" : active ? "実行を中断" : "送信";
+      const label = active?.signal.aborted ? "Stopping" : active ? "Stop" : "Send";
       button.title = label;
       button.setAttribute("aria-label", label);
     }
@@ -45,7 +45,7 @@
       const answer = document.createElement("div");
       const status = document.createElement("div");
       status.setAttribute("role", "status");
-      status.textContent = "思考中…";
+      status.textContent = "Preparing…";
       bot.appendChild(answer);
       bot.appendChild(status);
       messages.appendChild(bot);
@@ -71,7 +71,7 @@
           renderScheduled = false;
           if (!active) return;
           renderAnswer();
-          status.textContent = "実行中…";
+          status.textContent = "Running…";
         };
         if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
         else run();
@@ -90,7 +90,7 @@
         }
         await consumeSse(response, (event) => {
           if (event.event?.error || event.metadata?.error) {
-            throw new Error(errorText(event.event?.error || event.metadata?.message, "実行に失敗しました"));
+            throw new Error(errorText(event.event?.error || event.metadata?.message, "Execution failed"));
           }
           if (event.delta) {
             content += event.delta;
@@ -99,17 +99,17 @@
           if (event.metadata?.goal) goalStatus = event.metadata.goal.status;
         });
         if (controller.signal.aborted) {
-          status.textContent = "中断しました。変更がある場合はGit差分を確認してください。";
+          status.textContent = "Stopped. Check Git diff for changes.";
         } else {
-          status.textContent = goalStatus === "blocked" ? "追加入力が必要です。"
-            : goalStatus === "budget_exhausted" ? "ラウンド上限に達しました。回答内のコマンドで再開できます。"
-            : "完了";
+          status.textContent = goalStatus === "blocked" ? "Input needed."
+            : goalStatus === "budget_exhausted" ? "Round limit reached. Use the command in the response to continue."
+            : "Complete";
         }
       } catch (error) {
         // Preserve all partial output; error strings are never interpreted as HTML.
         status.textContent = controller.signal.aborted || error?.name === "AbortError"
-          ? "中断しました。変更がある場合はGit差分を確認してください。"
-          : `エラー: ${errorText(error, "通信に失敗しました")}`;
+          ? "Stopped. Check Git diff for changes."
+          : `Error: ${errorText(error, "Network error")}`;
       } finally {
         // A scheduled frame may fire after this request finished (run() guards
         // on `active`), so render the final partial content synchronously here.

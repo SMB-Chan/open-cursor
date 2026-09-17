@@ -349,7 +349,7 @@
 
   <header>
     <div class="header-title">
-      <span>⚡</span> Open-Cursor Mobile
+      Open-Cursor Mobile
     </div>
     <div class="status-badge" id="bridge-status-pill">
       <div class="status-dot" id="status-dot"></div>
@@ -362,38 +362,36 @@
     <div class="tab-content active" id="tab-chat">
       <div class="model-bar">
         <select class="model-select" id="model-select">
-          <option value="collaborative">🤝 Plan → Implement → Review → Refine</option>
-          <option value="pipeline">📋 Plan → Implement</option>
-          <option value="goal">🎯 Goal Loop (目標達成まで継続)</option>
-          <option value="auto" selected>🤖 Auto (自動判別モード - 推奨)</option>
-          <option value="autonomous">⚡ 自律エージェント (承認なし全自動)</option>
-          <option value="mimo-gemini">🤝 MiMo + Gemini (協調モード)</option>
-          <option value="codex">💻 OpenAI ChatGPT / Codex</option>
-          <option value="antigravity/pro">🧠 Gemini 3.1 Pro</option>
-          <option value="antigravity/flash">⚡ Gemini 3.8 Flash</option>
-          <option value="mimo">🚀 Xiaomi MiMo v2.5 Pro</option>
+          <option value="collaborative">Collaborative</option>
+          <option value="pipeline">Pipeline</option>
+          <option value="goal">Goal Loop</option>
+          <option value="auto" selected>Auto</option>
+          <option value="autonomous">Autonomous</option>
+          <option value="mimo-gemini">MiMo + Gemini</option>
+          <option value="codex">Codex</option>
+          <option value="antigravity/pro">Gemini Pro</option>
+          <option value="antigravity/flash">Gemini Flash</option>
+          <option value="mimo">MiMo</option>
         </select>
       </div>
 
       <div class="messages-container" id="messages-container">
         <div class="message assistant">
-          👋 <strong>Open-Cursor Mobile へようこそ！</strong><br>
-          スマートフォンからいつでもチャット、自律コード生成、テスト実行、Git変更の確認が可能です。<br>
-          下の入力欄または音声入力ボタンから指示を送ってください。
+          Describe a task to begin. Use the quick suggestions below, or type your own.
         </div>
       </div>
 
       <div class="prompt-suggestions">
-        <div class="chip" onclick="fillPrompt('現在のGitステータスを確認して')">📋 Git確認</div>
-        <div class="chip" onclick="fillPrompt('テストを実行して結果を教えて')">🧪 テスト実行</div>
-        <div class="chip" onclick="fillPrompt('直近の変更内容と課題を分析して')">🔍 コード分析</div>
-        <div class="chip" onclick="fillPrompt('コードのリファクタリングを提案して')">✨ リファクタ</div>
+        <div class="chip" onclick="fillPrompt('現在のGitステータスを確認して')">Git status</div>
+        <div class="chip" onclick="fillPrompt('テストを実行して結果を教えて')">Run tests</div>
+        <div class="chip" onclick="fillPrompt('直近の変更内容と課題を分析して')">Analyze changes</div>
+        <div class="chip" onclick="fillPrompt('コードのリファクタリングを提案して')">Refactor</div>
       </div>
 
       <div class="input-bar">
-        <button class="btn-mic" id="btn-mic" title="音声入力">🎙️</button>
-        <textarea id="prompt-input" rows="1" placeholder="AIに指示を送信..."></textarea>
-        <button class="btn-send" id="btn-send">➤</button>
+        <button class="btn-mic" id="btn-mic" title="Voice input" aria-label="Voice input">🎙️</button>
+        <textarea id="prompt-input" rows="1" placeholder="Describe your task…" aria-label="Message"></textarea>
+        <button class="btn-send" id="btn-send" aria-label="Send">➤</button>
       </div>
     </div>
 
@@ -479,21 +477,21 @@
   </main>
 
   <nav>
-    <button class="nav-item active" onclick="switchTab('chat')">
+    <button class="nav-item active" onclick="switchTab('chat')" aria-label="Chat">
       <span class="nav-icon">💬</span>
-      <span>チャット</span>
+      <span>Chat</span>
     </button>
-    <button class="nav-item" onclick="switchTab('git')">
+    <button class="nav-item" onclick="switchTab('git')" aria-label="Git diff">
       <span class="nav-icon">📁</span>
-      <span>Git差分</span>
+      <span>Git</span>
     </button>
-    <button class="nav-item" onclick="switchTab('status')">
+    <button class="nav-item" onclick="switchTab('status')" aria-label="Status">
       <span class="nav-icon">📊</span>
-      <span>ステータス</span>
+      <span>Status</span>
     </button>
-    <button class="nav-item" onclick="switchTab('term')">
+    <button class="nav-item" onclick="switchTab('term')" aria-label="Terminal">
       <span class="nav-icon">⚡</span>
-      <span>コマンド</span>
+      <span>Terminal</span>
     </button>
   </nav>
 

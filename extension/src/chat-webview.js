@@ -173,7 +173,8 @@ function addStatusRow(parent, labelText, valText, valClass = "") {
 function makeStartBridgeButton() {
   const btn = document.createElement("button");
   btn.className = "status-start-btn";
-  btn.textContent = "Start Bridge";
+  btn.textContent = "Start";
+  btn.setAttribute("aria-label", "Start bridge server");
   btn.addEventListener("click", () => {
     btn.disabled = true;
     btn.textContent = "Starting…";
@@ -184,7 +185,7 @@ function makeStartBridgeButton() {
 
 function renderOfflineStatus(data) {
   bridgeDot.classList.add("offline");
-  bridgeLabel.textContent = "Bridge: OFFLINE";
+  bridgeLabel.textContent = "Bridge: Not Running";
   if (agentsSummary) agentsSummary.textContent = "";
 
   if (statusDetailsContent) {
@@ -192,7 +193,7 @@ function renderOfflineStatus(data) {
     const row = document.createElement("div");
     row.className = "status-row";
     const lbl = document.createElement("span");
-    lbl.textContent = "Bridge is not responding on 127.0.0.1:" + (data?.port || 9876);
+    lbl.textContent = "Not responding on 127.0.0.1:" + (data?.port || 9876);
     row.appendChild(lbl);
     statusDetailsContent.appendChild(row);
     statusDetailsContent.appendChild(makeStartBridgeButton());
@@ -200,10 +201,10 @@ function renderOfflineStatus(data) {
 
   if (emptyStatus) {
     emptyStatus.textContent = "";
-    const card = makeStatusSection("Bridge Status: Offline");
+    const card = makeStatusSection("Bridge Status");
     const desc = document.createElement("div");
     desc.className = "status-row";
-    desc.textContent = "The local multi-agent bridge is not running.";
+    desc.textContent = "The bridge is not running. Start it to begin.";
     card.appendChild(desc);
     card.appendChild(makeStartBridgeButton());
     emptyStatus.appendChild(card);
@@ -212,7 +213,7 @@ function renderOfflineStatus(data) {
 
 function renderOnlineStatus(data) {
   bridgeDot.classList.remove("offline");
-  bridgeLabel.textContent = "Bridge: OK (v" + (data.version || "2.9.2") + ")";
+  bridgeLabel.textContent = "Bridge: Running (v" + (data.version || "2.9.2") + ")";
 
   const agents = data.agents || {};
   const agentKeys = Object.keys(agents);
@@ -903,7 +904,7 @@ if (statusToggleBtn && statusDetails) {
   statusToggleBtn.addEventListener("click", () => {
     const isHidden = statusDetails.style.display === "none" || !statusDetails.style.display;
     statusDetails.style.display = isHidden ? "block" : "none";
-    statusToggleBtn.textContent = isHidden ? "Details ▴" : "Status ▾";
+    statusToggleBtn.textContent = isHidden ? "Show Details" : "Hide Details";
   });
 }
 

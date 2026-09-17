@@ -4,6 +4,7 @@ import { join, resolve, basename } from "node:path";
 import { homedir } from "node:os";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { getBridgeStats } from "./stats.js";
 
 const execAsync = promisify(exec);
 
@@ -45,7 +46,7 @@ export function updateExecutionState(patch = {}) {
     inMemoryState.recentSteps = steps;
   }
 
-  saveState().catch(() => {});
+  scheduleStateSave();
   return inMemoryState;
 }
 
@@ -53,7 +54,28 @@ export function getExecutionState() {
   return { ...inMemoryState };
 }
 
-async function saveState() {
+let stateSaveTimer = null;
+let stateSavePromise = null;
+let stateSavePending = false;
+
+function scheduleStateSave() {
+  stateSavePending = true;
+  if (stateSaveTimer || stateSavePromise) return;
+  stateSaveTimer = setTimeout(flushStateSave, 50);
+  stateSaveTimer.unref?.();
+}
+
+function flushStateSave() {
+  stateSaveTimer = null;
+  if (!stateSavePending) return;
+  stateSavePending = false;
+  stateSavePromise = writeState().finally(() => {
+    stateSavePromise = null;
+    if (stateSavePending) scheduleStateSave();
+  });
+}
+
+async function writeState() {
   try {
     if (!existsSync(STATE_DIR)) {
       await mkdir(STATE_DIR, { recursive: true });
@@ -210,8 +232,9 @@ export async function getWorkspaceStatus(workspacePath) {
           }
         })
     );
-    fileStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    info.recentFiles = fileStats.slice(0, 10);
+    const recentFiles = fileStats.filter(Boolean);
+    recentFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    info.recentFiles = recentFiles.slice(0, 10);
   } catch {}
 
   return info;
@@ -221,8 +244,8 @@ export async function getMonitorData(workspacePath) {
   const [llm, workspace, execution, stats] = await Promise.all([
     getLLMStatus(),
     getWorkspaceStatus(workspacePath),
-    Promise.resolve(getExecutionState()),
-    import("./stats.js").then((m) => m.getBridgeStats()),
+    getExecutionState(),
+    getBridgeStats(),
   ]);
 
   return {

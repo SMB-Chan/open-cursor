@@ -64,9 +64,9 @@ test("mobile chat sends the selected mode and renders escaped output to completi
   assert.equal(JSON.parse(request.options.body).model, "goal");
   assert.ok(request.options.signal instanceof AbortSignal);
   assert.match(app.bubble().children[0].innerHTML, /&lt;script&gt;/);
-  assert.equal(app.bubble().children[1].textContent, "完了");
+  assert.equal(app.bubble().children[1].textContent, "Complete");
   assert.equal(app.controller.busy, false);
-  assert.equal(app.elements["btn-send"].attributes["aria-label"], "送信");
+  assert.equal(app.elements["btn-send"].attributes["aria-label"], "Send");
 });
 
 test("stop button aborts the fetch, retains partial output, and permits another request", async () => {
@@ -88,16 +88,16 @@ test("stop button aborts the fetch, retains partial output, and permits another 
   await rendered.promise;
   await app.send("重複送信");
   assert.equal(count, 1);
-  assert.equal(app.elements["btn-send"].attributes["aria-label"], "実行を中断");
+  assert.equal(app.elements["btn-send"].attributes["aria-label"], "Stop");
   app.elements["btn-send"].listeners.click();
   assert.equal(signal.aborted, true);
   await pending;
   assert.match(app.bubble().children[0].innerHTML, /途中の結果/);
-  assert.match(app.bubble().children[1].textContent, /中断しました/);
+  assert.match(app.bubble().children[1].textContent, /Stopped/);
   assert.equal(app.elements["btn-send"].disabled, false);
   await app.send("再送");
   assert.equal(count, 2);
-  assert.equal(app.bubble().children[1].textContent, "完了");
+  assert.equal(app.bubble().children[1].textContent, "Complete");
 });
 
 test("HTTP and streaming errors are plain text and never appear as successful completion", async () => {
@@ -110,14 +110,14 @@ test("HTTP and streaming errors are plain text and never appear as successful co
     const app = client(fetch);
     await app.send();
     const status = app.bubble().children[1];
-    assert.match(status.textContent, /エラー:/);
+    assert.match(status.textContent, /Error:/);
     assert.equal(status.innerHTML, undefined);
     assert.equal(app.controller.busy, false);
   }
 });
 
 test("goal blockers and round exhaustion are distinct from completion", async () => {
-  for (const [status, expected] of [["blocked", /追加入力/], ["budget_exhausted", /ラウンド上限/]]) {
+  for (const [status, expected] of [["blocked", /Input needed/], ["budget_exhausted", /Round limit/]]) {
     const app = client(async () => response(event("結果", { goal: { status } }) + "data: [DONE]\n\n"));
     await app.send();
     assert.match(app.bubble().children[1].textContent, expected);

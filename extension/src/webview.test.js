@@ -229,7 +229,7 @@ test("webview client renders bridge status online and offline", () => {
     },
   });
 
-  assert.equal(h.ids["bridge-label"].textContent, "Bridge: OK (v2.9.2)");
+  assert.equal(h.ids["bridge-label"].textContent, "Bridge: Running (v2.9.2)");
   assert.equal(h.ids["bridge-dot"].classList.contains("offline"), false);
   assert.ok(h.ids["agents-summary"].children.length >= 2);
 
@@ -246,6 +246,6 @@ test("webview client renders bridge status online and offline", () => {
     type: "status",
     data: { online: false, error: "Connection refused" },
   });
-  assert.equal(h.ids["bridge-label"].textContent, "Bridge: OFFLINE");
+  assert.equal(h.ids["bridge-label"].textContent, "Bridge: Not Running");
   assert.equal(h.ids["bridge-dot"].classList.contains("offline"), true);
 });

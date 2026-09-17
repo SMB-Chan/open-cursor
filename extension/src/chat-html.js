@@ -98,7 +98,7 @@ function getChatHTML(webview) {
     #input::placeholder { color: var(--vscode-input-placeholderForeground); }
     #mode { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; padding: 8px; }
     #actions { display: flex; gap: 6px; }
-    button { padding: 8px 14px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; }
+    button { padding: 10px 14px; min-height: 44px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; font-size: inherit; }
     button:disabled { opacity: .55; cursor: default; }
     button:focus-visible, #mode:focus-visible, .run-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
     #cancel { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
@@ -153,24 +153,24 @@ function getChatHTML(webview) {
   <div id="messages" role="log" aria-live="polite" aria-label="Conversation">
     <div id="empty">
       <div class="empty-title">Open-Cursor Chat</div>
-      <div class="empty-hint">Choose a routing mode below, then describe your task.</div>
-      <div class="empty-hint">Enter to send · Shift+Enter for a new line · Esc stops a running agent</div>
+      <div class="empty-hint">Choose a mode, then describe your task.</div>
+      <div class="empty-hint">Enter to send · Shift+Enter for a new line · Esc to stop</div>
       <div id="empty-status" class="empty-status-card"></div>
     </div>
   </div>
   <div id="input-area">
-    <select id="mode" aria-label="Agent routing mode">
-      <option value="auto">Auto (自動判別)</option>
-      <option value="goal">Goal Loop (目標達成まで自動継続)</option>
-      <option value="autonomous">Autonomous (承認なし全自動)</option>
+    <select id="mode" aria-label="Mode">
+      <option value="auto">Auto</option>
+      <option value="goal">Goal Loop</option>
+      <option value="autonomous">Autonomous</option>
       <option value="mimo-gemini">MiMo + Gemini</option>
-      <option value="collaborative">Collaborative (Codex + Gemini)</option>
+      <option value="collaborative">Collaborative</option>
       <option value="pipeline">Pipeline</option>
       <option value="mimo">MiMo</option>
       <option value="antigravity">Antigravity (Gemini)</option>
       <option value="codex">Codex</option>
     </select>
-    <textarea id="input" placeholder="Ask anything…  Shift+Enter for a new line" aria-label="Message"></textarea>
+    <textarea id="input" placeholder="Describe your task…" aria-label="Message"></textarea>
     <div id="actions">
       <button id="clear" title="Clear the conversation view">Clear</button>
       <button id="cancel" disabled>Stop</button>
