@@ -326,6 +326,7 @@ async function postBridgeStatus(panel) {
         agents: agents.agents || {},
         stats: stats || {},
         port,
+        workspace: workspacePath(),
       },
     });
   } catch (error) {

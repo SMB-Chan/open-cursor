@@ -243,6 +243,7 @@ function renderOnlineStatus(data) {
     addStatusRow(runtime, "Uptime", formatUptime(data.stats?.uptime_seconds || 0));
     addStatusRow(runtime, "Billing", data.billing || "per-agent");
     addStatusRow(runtime, "Endpoint", "127.0.0.1:" + (data.port || 9876));
+    if (data.workspace) addStatusRow(runtime, "Workspace", data.workspace);
     grid.appendChild(runtime);
 
     const connected = makeStatusSection("Connected Agents");

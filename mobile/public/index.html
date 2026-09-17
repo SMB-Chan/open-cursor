@@ -441,6 +441,7 @@
           <span>Files</span>
           <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadFiles()">Refresh</button>
         </div>
+        <div id="file-summary" style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;"></div>
         <div class="file-tree" id="file-tree"><div class="tree-empty">Loading…</div></div>
       </div>
     </div>
@@ -701,7 +702,9 @@
     // File Tree Loader
     async function loadFiles() {
       const container = document.getElementById('file-tree');
+      const summary = document.getElementById('file-summary');
       container.innerHTML = '<div class="tree-empty">Loading…</div>';
+      summary.textContent = '';
       try {
         const res = await fetch('/api/files?depth=3');
         const data = await res.json();
@@ -709,6 +712,9 @@
           container.innerHTML = '<div class="tree-empty">No files</div>';
           return;
         }
+        const fileCount = data.entries.filter(e => e.type === 'file').length;
+        const dirCount = data.entries.filter(e => e.type === 'dir').length;
+        summary.textContent = `${fileCount} files, ${dirCount} directories`;
         container.innerHTML = '';
         const stack = [{ el: container, depth: -1 }];
         for (const entry of data.entries) {
