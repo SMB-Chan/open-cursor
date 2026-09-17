@@ -5,8 +5,8 @@
  */
 
 import { createServer } from "node:http";
-import { stat } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { stat, readdir } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
@@ -760,6 +760,95 @@ async function handleHealth(req, res) {
   });
 }
 
+const IGNORED_DIRS = new Set([
+  ".git", ".hg", ".svn", ".cache", ".idea", ".vscode",
+  "node_modules", "vendor", ".venv", "venv", "dist", "build",
+  "out", "target", "coverage", ".next", ".turbo",
+]);
+
+const SECRET_FILE_PATTERNS = [
+  /^\.env(?:\..+)?$/i,
+  /(?:^|[-_.])(secret|secrets|credential|credentials|token|tokens)(?:[-_.]|$)/i,
+  /^(id_rsa|id_ed25519|id_ecdsa)$/i,
+  /\.(pem|key|p12|pfx|jks|keystore)$/i,
+];
+
+function isSecretFile(name) {
+  return SECRET_FILE_PATTERNS.some((re) => re.test(name));
+}
+
+async function buildFileTree(root, { maxDepth = 3, maxEntries = 500 } = {}) {
+  const entries = [];
+  let count = 0;
+
+  async function walk(dir, depth) {
+    if (depth > maxDepth || count >= maxEntries) return;
+    let children;
+    try {
+      children = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    children.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const child of children) {
+      if (count >= maxEntries) break;
+      if (IGNORED_DIRS.has(child.name)) continue;
+      if (isSecretFile(child.name)) continue;
+
+      const fullPath = join(dir, child.name);
+      const rel = relative(root, fullPath);
+      count++;
+
+      if (child.isDirectory()) {
+        const node = { name: child.name, path: rel, type: "dir", children: [] };
+        entries.push(node);
+        await walk(fullPath, depth + 1);
+      } else {
+        let size = 0;
+        let mtime = null;
+        try {
+          const s = await stat(fullPath);
+          size = s.size;
+          mtime = s.mtime.toISOString();
+        } catch {}
+        entries.push({
+          name: child.name,
+          path: rel,
+          type: "file",
+          ext: extname(child.name).toLowerCase(),
+          size,
+          mtime,
+        });
+      }
+    }
+  }
+
+  await walk(root, 0);
+  return { root, entries, truncated: count >= maxEntries };
+}
+
+async function handleFiles(req, res, url) {
+  rejectBrowserOrigin(req);
+  const rawWorkspace = url.searchParams.get("workspace") || decodeHeaderPath(req.headers["x-workspace-path"]);
+  const maxDepth = Math.min(5, Math.max(1, Number(url.searchParams.get("depth")) || 3));
+
+  let cwd = rawWorkspace || process.cwd();
+  if (!isAbsolute(cwd)) cwd = resolve(cwd);
+
+  const info = await stat(cwd).catch(() => null);
+  if (!info?.isDirectory()) {
+    throw new HttpError(400, "Workspace path is not a directory");
+  }
+
+  const tree = await buildFileTree(cwd, { maxDepth });
+  sendJSON(res, 200, { object: "workspace.files", ...tree });
+}
+
 const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, { Allow: "GET, POST, OPTIONS" });
@@ -782,6 +871,8 @@ const server = createServer(async (req, res) => {
       sendJSON(res, 200, data);
     } else if ((url.pathname === "/v1/stats" || url.pathname === "/stats") && req.method === "GET") {
       sendJSON(res, 200, { object: "bridge.stats", ...getBridgeStats() });
+    } else if ((url.pathname === "/v1/files" || url.pathname === "/files") && req.method === "GET") {
+      await handleFiles(req, res, url);
     } else if (
       url.pathname.startsWith("/v1/execution-receipts/") &&
       req.method === "GET"
@@ -864,6 +955,7 @@ export {
   HttpError,
   activeExecutionCount,
   analyzeTask,
+  buildFileTree,
   buildPrompt,
   formatCollaborativeResult,
   getBridgeStats,

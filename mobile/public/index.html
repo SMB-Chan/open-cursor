@@ -343,6 +343,17 @@
       text-align: center;
     }
     .action-btn:active { background: #30363d; }
+
+    /* File tree */
+    .file-tree { font-family: var(--font-mono); font-size: 12px; }
+    .tree-dir, .tree-file { padding: 4px 0; display: flex; align-items: center; gap: 6px; cursor: default; }
+    .tree-dir { color: var(--accent); font-weight: 600; cursor: pointer; }
+    .tree-file { color: var(--text); }
+    .tree-children { padding-left: 16px; }
+    .tree-icon { width: 16px; text-align: center; flex-shrink: 0; }
+    .tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tree-size { color: var(--text-muted); font-size: 10px; margin-left: auto; flex-shrink: 0; }
+    .tree-empty { color: var(--text-muted); font-style: italic; padding: 16px 0; text-align: center; }
   </style>
 </head>
 <body>
@@ -423,7 +434,18 @@
       </div>
     </div>
 
-    <!-- TAB 3: STATUS -->
+    <!-- TAB 3: FILES -->
+    <div class="tab-content section-pad" id="tab-files">
+      <div class="card">
+        <div class="card-title">
+          <span>Files</span>
+          <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadFiles()">Refresh</button>
+        </div>
+        <div class="file-tree" id="file-tree"><div class="tree-empty">Loading…</div></div>
+      </div>
+    </div>
+
+    <!-- TAB 4: STATUS -->
     <div class="tab-content section-pad" id="tab-status">
       <div class="card">
         <div class="card-title">
@@ -484,6 +506,10 @@
     <button class="nav-item" onclick="switchTab('git')" aria-label="Git diff">
       <span class="nav-icon">📁</span>
       <span>Git</span>
+    </button>
+    <button class="nav-item" onclick="switchTab('files')" aria-label="Files">
+      <span class="nav-icon">📂</span>
+      <span>Files</span>
     </button>
     <button class="nav-item" onclick="switchTab('status')" aria-label="Status">
       <span class="nav-icon">📊</span>
@@ -557,10 +583,11 @@
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
       document.getElementById('tab-' + tabId).classList.add('active');
-      const idx = ['chat', 'git', 'status', 'term'].indexOf(tabId);
+      const idx = ['chat', 'git', 'files', 'status', 'term'].indexOf(tabId);
       if (idx !== -1) document.querySelectorAll('.nav-item')[idx].classList.add('active');
 
       if (tabId === 'git') loadGit();
+      if (tabId === 'files') loadFiles();
       if (tabId === 'status') loadStatus();
     }
 
@@ -668,6 +695,63 @@
         diffEl.textContent = data.diff ? data.diff : '変更の差分はありません。';
       } catch (err) {
         console.error('Failed to load git info:', err);
+      }
+    }
+
+    // File Tree Loader
+    async function loadFiles() {
+      const container = document.getElementById('file-tree');
+      container.innerHTML = '<div class="tree-empty">Loading…</div>';
+      try {
+        const res = await fetch('/api/files?depth=3');
+        const data = await res.json();
+        if (!data.entries || data.entries.length === 0) {
+          container.innerHTML = '<div class="tree-empty">No files</div>';
+          return;
+        }
+        container.innerHTML = '';
+        const stack = [{ el: container, depth: -1 }];
+        for (const entry of data.entries) {
+          const depth = entry.path.split('/').length - 1;
+          while (stack.length > 1 && stack[stack.length - 1].depth >= depth) stack.pop();
+          const parent = stack[stack.length - 1].el;
+          if (entry.type === 'dir') {
+            const dir = document.createElement('div');
+            dir.className = 'tree-dir';
+            dir.innerHTML = `<span class="tree-icon">▸</span><span class="tree-name">${escapeHtml(entry.name)}</span>`;
+            const children = document.createElement('div');
+            children.className = 'tree-children';
+            children.style.display = 'none';
+            dir.addEventListener('click', () => {
+              const open = children.style.display !== 'none';
+              children.style.display = open ? 'none' : 'block';
+              dir.querySelector('.tree-icon').textContent = open ? '▸' : '▾';
+            });
+            parent.appendChild(dir);
+            parent.appendChild(children);
+            stack.push({ el: children, depth });
+          } else {
+            const file = document.createElement('div');
+            file.className = 'tree-file';
+            const sizeStr = entry.size > 1024 ? Math.round(entry.size / 1024) + ' KB' : entry.size + ' B';
+            file.innerHTML = `<span class="tree-icon"> </span><span class="tree-name">${escapeHtml(entry.name)}</span><span class="tree-size">${sizeStr}</span>`;
+            file.addEventListener('click', () => {
+              const prompt = document.getElementById('prompt-input');
+              prompt.value += (prompt.value ? ' ' : '') + entry.path;
+              switchTab('chat');
+              prompt.focus();
+            });
+            parent.appendChild(file);
+          }
+        }
+        if (data.truncated) {
+          const note = document.createElement('div');
+          note.className = 'tree-empty';
+          note.textContent = 'Truncated — some files not shown';
+          container.appendChild(note);
+        }
+      } catch (err) {
+        container.innerHTML = `<div class="tree-empty">Failed to load: ${escapeHtml(err.message)}</div>`;
       }
     }
 

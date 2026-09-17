@@ -11,6 +11,7 @@ import {
   ExecutionTimeoutError,
   activeExecutionCount,
   analyzeTask,
+  buildFileTree,
   buildPrompt,
   formatCollaborativeResult,
   getBridgeStats,
@@ -498,4 +499,28 @@ test("handleChat resolves Japanese and URI-encoded workspace paths", async (t) =
   req2.emit("end");
   await result2;
   assert.equal(seenCwd2, base);
+});
+
+test("buildFileTree returns workspace entries respecting depth and secret exclusion", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "open-cursor-files-"));
+  t.after(async () => { await rm(base, { recursive: true, force: true }); });
+
+  const { writeFile: wf, mkdir: mk } = await import("node:fs/promises");
+  await mk(join(base, "src"), { recursive: true });
+  await mk(join(base, "node_modules", "pkg"), { recursive: true });
+  await wf(join(base, "src", "index.js"), "console.log(1)");
+  await wf(join(base, "src", "utils.ts"), "export {}");
+  await wf(join(base, "README.md"), "# Test");
+  await wf(join(base, ".env"), "SECRET=1");
+  await wf(join(base, "package.json"), "{}");
+  await wf(join(base, "node_modules", "pkg", "index.js"), "");
+
+  const tree = await buildFileTree(base, { maxDepth: 2 });
+  assert.equal(tree.root, base);
+  assert.ok(tree.entries.length > 0);
+  assert.ok(tree.entries.some((e) => e.name === "src" && e.type === "dir"));
+  assert.ok(tree.entries.some((e) => e.name === "index.js" && e.type === "file"));
+  assert.ok(!tree.entries.some((e) => e.name === ".env"), "secret files must be excluded");
+  assert.ok(!tree.entries.some((e) => e.name === "node_modules"), "ignored dirs must be excluded");
+  assert.ok(tree.entries.some((e) => e.name === "README.md"));
 });

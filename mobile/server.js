@@ -440,6 +440,15 @@ async function requestHandler(req, res) {
       await handleExec(req, res);
     } else if (url.pathname === "/api/chat" && req.method === "POST") {
       await handleChat(req, res);
+    } else if (url.pathname === "/api/files" && req.method === "GET") {
+      try {
+        const depth = url.searchParams.get("depth") || "3";
+        const filesRes = await fetch(`${BRIDGE_URL}/v1/files?depth=${depth}`, { signal: AbortSignal.timeout(5000) });
+        const filesData = await filesRes.json();
+        sendJSON(res, filesRes.ok ? 200 : filesRes.status, filesData);
+      } catch (e) {
+        sendJSON(res, 502, { ok: false, error: e.message });
+      }
     } else if ((url.pathname === "/sse.js" || url.pathname === "/chat.js") && req.method === "GET") {
       const file = url.pathname === "/sse.js" ? join(__dirname, "../extension/src/sse.js") : join(__dirname, "public/chat.js");
       serveStatic(res, "text/javascript; charset=utf-8", await readFile(file, "utf8"));
