@@ -76,6 +76,37 @@ test("goal loop stops on a blocker or exhausted round budget", async () => {
   }
 });
 
+test("all goal outcomes reach streaming clients once with resumable thread metadata", async () => {
+  for (const [status, marker, label] of [
+    ["complete", "GOAL_COMPLETE", "COMPLETE"],
+    ["blocked", "GOAL_BLOCKED", "BLOCKED"],
+    ["budget_exhausted", "", "ROUND BUDGET EXHAUSTED"],
+  ]) {
+    const events = [];
+    const result = await runGoalLoop("Fix parser", { onEvent: (event) => events.push(event) }, {
+      runSession: async ({ onChunk }) => {
+        const content = `Round report.\n${marker}`;
+        onChunk(content);
+        return goalRun(content);
+      },
+      readStatus: async () => null,
+    });
+    assert.equal(result.goal.status, status);
+    assert.equal(result.goal.thread_id, goalTestSession);
+    const count = marker ? 1 : goalLoopConfig().maxRounds;
+    assert.equal(result.goal.rounds_used, count);
+    assert.equal(result.goal.max_rounds, goalLoopConfig().maxRounds);
+    const summary = events.filter((event) => event.agent === "goal");
+    assert.equal(summary.length, 1);
+    assert.ok(summary[0].text.includes(label));
+    assert.ok(!summary[0].text.includes("Round report."), "summary must not replay the round transcripts");
+    if (status !== "complete") {
+      assert.equal(result.goal.resume_command, `codex exec resume ${goalTestSession}`);
+      assert.ok(summary[0].text.includes(result.goal.resume_command));
+    } else assert.equal(result.goal.resume_command, undefined);
+  }
+});
+
 test("goal loop never retries failed, timed-out or unresumable rounds", async () => {
   const timeout = Object.assign(new Error("round timed out"), { statusCode: 504 });
   for (const outcome of [goalRun("GOAL_COMPLETE", 1), { ...goalRun("Still working"), stderr: "" }, timeout]) {

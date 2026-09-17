@@ -142,6 +142,15 @@ function assertAgentsEnabled(mode) {
   }
 }
 
+function decodeHeaderPath(value) {
+  if (typeof value !== "string" || value === "") return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 async function resolveWorkspacePath(rawPath, prompt = "") {
   let candidate = rawPath ? String(rawPath) : null;
   if (!candidate && process.env.OPEN_CURSOR_WORKSPACE) {
@@ -165,9 +174,6 @@ async function resolveWorkspacePath(rawPath, prompt = "") {
     candidate = process.cwd();
   }
 
-  try {
-    candidate = decodeURIComponent(candidate);
-  } catch {}
   if (!isAbsolute(candidate)) {
     throw new HttpError(400, "X-Workspace-Path must be an absolute path");
   }
@@ -405,7 +411,12 @@ async function handleChat(req, res, {
   const body = await parseBody(req);
   const stream = body.stream === true;
   const fullPrompt = buildPrompt(body.messages || []);
-  const cwd = await resolveWorkspacePath(req.headers["x-workspace-path"], fullPrompt);
+  // The header form is URI-encoded by clients that embed spaces/non-ASCII paths;
+  // body.workspace is already a literal path, so decode only the header once.
+  const cwd = await resolveWorkspacePath(
+    body.workspace || decodeHeaderPath(req.headers["x-workspace-path"]),
+    fullPrompt
+  );
   const selection = parseAgentSelection(body.model || "", req.headers["x-agent-mode"]);
   const taskInfo = analyzeTask(fullPrompt);
   const effectiveMode = selection.mode || taskInfo.routing;
@@ -449,6 +460,7 @@ async function handleChat(req, res, {
         sse.finish(responseModel(result.agent, selection.model), {
           agent: result.agent,
           active_executions: activeExecutionCount(),
+          ...(result.goal ? { goal: result.goal } : {}),
           ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
         });
       } catch (error) {
@@ -503,6 +515,7 @@ async function handleChat(req, res, {
           open_cursor: {
             agent: result.agent,
             active_executions: activeExecutionCount(),
+            ...(result.goal ? { goal: result.goal } : {}),
             ...(workspaceReceipt ? { workspace_receipt: workspaceReceipt } : {}),
           },
         },
@@ -545,10 +558,12 @@ async function agentStatus(key) {
 }
 
 async function handleModels(req, res) {
-  const codexModel = await getCodexModel();
-  const codex = await agentStatus("codex");
-  const antigravity = await agentStatus("antigravity");
-  const mimo = await agentStatus("mimo");
+  const [codexModel, codex, antigravity, mimo] = await Promise.all([
+    getCodexModel(),
+    agentStatus("codex"),
+    agentStatus("antigravity"),
+    agentStatus("mimo"),
+  ]);
 
   const models = [
     {
@@ -664,19 +679,21 @@ async function handleModels(req, res) {
 
 async function handleAgents(req, res) {
   const agents = {};
-  for (const [key, agent] of Object.entries(AGENTS)) {
-    const status = await agentStatus(key);
-    agents[key] = {
-      name: agent.name,
-      enabled: status.enabled,
-      authenticated: status.authenticated,
-      available: status.available,
-      strengths: runtimeConfig.agents[key]?.strengths || agent.strengths,
-      auth_mode: runtimeConfig.agents[key]?.authMode || "unknown",
-      billing: runtimeConfig.agents[key]?.billing || "unknown",
-      workspace_access: runtimeConfig.agents[key]?.workspaceAccess || (key === "mimo" ? "none" : "agent-controlled"),
-    };
-  }
+  await Promise.all(
+    Object.entries(AGENTS).map(async ([key, agent]) => {
+      const status = await agentStatus(key);
+      agents[key] = {
+        name: agent.name,
+        enabled: status.enabled,
+        authenticated: status.authenticated,
+        available: status.available,
+        strengths: runtimeConfig.agents[key]?.strengths || agent.strengths,
+        auth_mode: runtimeConfig.agents[key]?.authMode || "unknown",
+        billing: runtimeConfig.agents[key]?.billing || "unknown",
+        workspace_access: runtimeConfig.agents[key]?.workspaceAccess || (key === "mimo" ? "none" : "agent-controlled"),
+      };
+    })
+  );
   sendJSON(res, 200, {
     agents,
     billing: "per-agent",
@@ -704,9 +721,11 @@ function handleExecutionReceipt(req, res, url) {
 }
 
 async function handleHealth(req, res) {
-  const codex = await agentStatus("codex");
-  const antigravity = await agentStatus("antigravity");
-  const mimo = await agentStatus("mimo");
+  const [codex, antigravity, mimo] = await Promise.all([
+    agentStatus("codex"),
+    agentStatus("antigravity"),
+    agentStatus("mimo"),
+  ]);
 
   sendJSON(res, 200, {
     status: "ok",
@@ -758,7 +777,7 @@ const server = createServer(async (req, res) => {
     } else if (url.pathname === "/v1/agents" && req.method === "GET") {
       await handleAgents(req, res);
     } else if ((url.pathname === "/monitor" || url.pathname === "/v1/monitor" || url.pathname === "/api/monitor") && req.method === "GET") {
-      const workspace = url.searchParams.get("workspace") || req.headers["x-workspace-path"];
+      const workspace = url.searchParams.get("workspace") || decodeHeaderPath(req.headers["x-workspace-path"]);
       const data = await getMonitorData(workspace);
       sendJSON(res, 200, data);
     } else if ((url.pathname === "/v1/stats" || url.pathname === "/stats") && req.method === "GET") {
@@ -803,9 +822,11 @@ function startServer() {
   process.once("SIGTERM", shutdown);
 
   server.listen(PORT, HOST, async () => {
-    const codex = await agentStatus("codex");
-    const antigravity = await agentStatus("antigravity");
-    const mimo = await agentStatus("mimo");
+    const [codex, antigravity, mimo] = await Promise.all([
+      agentStatus("codex"),
+      agentStatus("antigravity"),
+      agentStatus("mimo"),
+    ]);
     const execution = executionConfig();
     const configMode = runtimeConfig.overrides.length
       ? `bridge.json + ${runtimeConfig.overrides.length} env override(s)`
@@ -839,25 +860,18 @@ if (isMain) {
 }
 
 export {
-  ExecutionAbortedError,
   ExecutionTimeoutError,
   HttpError,
   activeExecutionCount,
   analyzeTask,
-  assertAgentsEnabled,
   buildPrompt,
   formatCollaborativeResult,
   getBridgeStats,
-  getExecutionReceipt,
   handleChat,
-  orchestrate,
   parseAgentSelection,
   parseBody,
   rejectBrowserOrigin,
   requiredAgentsForMode,
   resolveRequestId,
-  resolveWorkspacePath,
   runProcess,
-  server,
-  startServer,
 };

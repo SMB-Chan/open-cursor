@@ -8,6 +8,7 @@ import { networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { once } from "node:events";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -215,33 +216,36 @@ async function git(args, options = {}) {
 }
 
 async function handleStatus(req, res) {
-  let bridgeHealth = { status: "unknown" };
-  try {
-    const bridgeRes = await fetch(`${BRIDGE_URL}/health`, { signal: AbortSignal.timeout(3000) });
-    bridgeHealth = await bridgeRes.json();
-  } catch (error) {
-    bridgeHealth = { status: "offline", error: error.message };
-  }
-
-  let monitorData = null;
-  try {
-    const monRes = await fetch(`${BRIDGE_URL}/monitor`, { signal: AbortSignal.timeout(3000) });
-    if (monRes.ok) {
-      monitorData = await monRes.json();
-    }
-  } catch {}
-
-  let gitInfo = { branch: "unknown", dirty: 0, files: [] };
-  try {
-    const { stdout: branch } = await git(["rev-parse", "--abbrev-ref", "HEAD"]);
-    const { stdout: status } = await git(["status", "--porcelain"]);
-    const dirtyFiles = status.trim() ? status.trim().split("\n").map((line) => line.trim()) : [];
-    gitInfo = {
-      branch: branch.trim(),
-      dirty: dirtyFiles.length,
-      files: dirtyFiles.slice(0, 10),
-    };
-  } catch {}
+  const [bridgeHealth, monitorData, gitInfo] = await Promise.all([
+    (async () => {
+      try {
+        const response = await fetch(`${BRIDGE_URL}/health`, { signal: AbortSignal.timeout(3000) });
+        return await response.json();
+      } catch (error) {
+        return { status: "offline", error: error.message };
+      }
+    })(),
+    (async () => {
+      try {
+        const response = await fetch(`${BRIDGE_URL}/monitor`, { signal: AbortSignal.timeout(3000) });
+        return response.ok ? await response.json() : null;
+      } catch {
+        return null;
+      }
+    })(),
+    (async () => {
+      try {
+        const [{ stdout: branch }, { stdout: status }] = await Promise.all([
+          git(["rev-parse", "--abbrev-ref", "HEAD"]),
+          git(["status", "--porcelain"]),
+        ]);
+        const dirtyFiles = status.trim() ? status.trim().split("\n").map((line) => line.trim()) : [];
+        return { branch: branch.trim(), dirty: dirtyFiles.length, files: dirtyFiles.slice(0, 10) };
+      } catch {
+        return { branch: "unknown", dirty: 0, files: [] };
+      }
+    })(),
+  ]);
 
   sendJSON(res, 200, {
     ok: true,
@@ -323,27 +327,26 @@ async function handleExec(req, res) {
   }
 }
 
-async function handleChat(req, res) {
+async function handleChat(req, res, { fetchImpl = fetch } = {}) {
   const body = await readBody(req);
   const model = typeof body.model === "string" ? body.model : "auto";
   const prompt = typeof body.prompt === "string" ? body.prompt : "";
 
   if (!prompt.trim()) return sendJSON(res, 400, { ok: false, error: "Prompt is required" });
 
-  res.writeHead(200, {
-    ...securityHeaders("text/event-stream; charset=utf-8"),
-    "Cache-Control": "no-cache, no-store, no-transform",
-    Connection: "keep-alive",
-  });
-
   const controller = new AbortController();
   const onClose = () => {
     if (!res.writableEnded && !controller.signal.aborted) controller.abort();
   };
   res.once("close", onClose);
+  const onAborted = () => controller.abort();
+  req.once("aborted", onAborted);
+  if (req.aborted || res.destroyed) controller.abort();
+  let reader;
 
   try {
-    const upstreamRes = await fetch(`${BRIDGE_URL}/v1/chat/completions`, {
+    if (controller.signal.aborted) return;
+    const upstreamRes = await fetchImpl(`${BRIDGE_URL}/v1/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -358,30 +361,42 @@ async function handleChat(req, res) {
     });
 
     if (!upstreamRes.ok) {
-      const errText = await upstreamRes.text();
-      res.write(`data: ${JSON.stringify({ error: errText })}\n\n`);
-      res.write("data: [DONE]\n\n");
-      return res.end();
+      const payload = await upstreamRes.json().catch(() => ({}));
+      const message = typeof payload.error === "string" ? payload.error
+        : payload.error?.message || `Bridge returned HTTP ${upstreamRes.status}`;
+      if (!res.destroyed) sendJSON(res, upstreamRes.status, { ok: false, error: message });
+      return;
     }
 
-    const reader = upstreamRes.body.getReader();
-    const decoder = new TextDecoder();
+    if (!upstreamRes.body) throw new Error("Bridge returned an empty streaming response");
+    res.writeHead(200, {
+      ...securityHeaders("text/event-stream; charset=utf-8"),
+      "Cache-Control": "no-cache, no-store, no-transform",
+      Connection: "keep-alive",
+    });
+    reader = upstreamRes.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      res.write(decoder.decode(value, { stream: true }));
+      if (controller.signal.aborted) return;
+      if (!res.write(value)) await once(res, "drain", { signal: controller.signal });
     }
-    const tail = decoder.decode();
-    if (tail) res.write(tail);
-    res.end();
+    if (!res.destroyed) res.end();
   } catch (error) {
-    if (!res.writableEnded && !res.destroyed) {
+    if (!res.writableEnded && !res.destroyed && !controller.signal.aborted) {
+      if (!res.headersSent) return sendJSON(res, 502, { ok: false, error: error.message });
       res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
       res.write("data: [DONE]\n\n");
       res.end();
     }
   } finally {
+    controller.abort();
+    if (reader) {
+      try { await reader.cancel(); } catch {}
+      reader.releaseLock();
+    }
     res.removeListener("close", onClose);
+    req.removeListener("aborted", onAborted);
   }
 }
 
@@ -425,6 +440,9 @@ async function requestHandler(req, res) {
       await handleExec(req, res);
     } else if (url.pathname === "/api/chat" && req.method === "POST") {
       await handleChat(req, res);
+    } else if ((url.pathname === "/sse.js" || url.pathname === "/chat.js") && req.method === "GET") {
+      const file = url.pathname === "/sse.js" ? join(__dirname, "../extension/src/sse.js") : join(__dirname, "public/chat.js");
+      serveStatic(res, "text/javascript; charset=utf-8", await readFile(file, "utf8"));
     } else if (url.pathname === "/manifest.json" && req.method === "GET") {
       const content = await readFile(join(__dirname, "public", "manifest.json"), "utf8");
       serveStatic(res, "application/manifest+json; charset=utf-8", content);
@@ -481,18 +499,15 @@ if (isMain) {
 }
 
 export {
+  handleChat,
   HttpError,
-  bearerToken,
   isAuthorized,
   parseBoolean,
   readBody,
-  createMobileServer,
-  requireApiAuth,
   requestHandler,
   resolveMobileHost,
   resolveRemoteTransport,
   securityHeaders,
-  startServer,
   tokenMatches,
   validateRuntimeBoundary,
   validateTransportConfig,

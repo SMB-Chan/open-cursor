@@ -309,7 +309,6 @@ async function finishWorkspaceReceipt(journal, { status = "completed", error } =
 }
 
 export {
-  captureWorkspaceState,
   finishWorkspaceReceipt,
   getExecutionReceipt,
   shouldJournalWorkspace,

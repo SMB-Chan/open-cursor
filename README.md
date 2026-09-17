@@ -169,6 +169,8 @@ CLI shortcuts installed into `~/.local/bin`: `open-cursor`, `open-cursor-app`, `
 
 ### Mobile dashboard security
 
+The mobile chat supports collaborative, pipeline, and Goal Loop execution. During a request, the send button becomes a stop button: it aborts the mobile connection and forwards cancellation to the bridge. Partial answers remain visible after cancellation or errors. The dashboard shares the extension's SSE parser, rejects incomplete streams, preserves upstream HTTP errors such as workspace conflicts, and distinguishes goal blockers and round exhaustion from completion.
+
 The mobile dashboard is **localhost-only by default**. Starting Open-Cursor no longer exposes execution APIs to the LAN automatically.
 
 Remote access requires **both authentication and a protected transport**. `MOBILE_ALLOW_REMOTE=1` by itself now fails closed.
@@ -236,6 +238,8 @@ Goal mode drives the Codex **goals subsystem** from the bridge: round 1 starts a
 Environment knobs: `BRIDGE_GOAL_MAX_ROUNDS` (default 8, max 32) and `BRIDGE_GOAL_ROUND_TIMEOUT_MS` (default 10 minutes per round). Auto routing selects goal mode only on explicit goal/loop intent ("goal loop", "iterate until done", 「目標達成まで」「完了まで繰り返」); otherwise it stays on codex/collaborative.
 
 Goal status is accepted only on the final non-empty line outside code blocks; marker examples elsewhere in the report are preserved and do not stop execution. The round timeout applies to both fresh and resumed sessions, independently of the general agent timeout. Round counts must be integers from 1 to 32, and round timeouts must be integers from 1,000 to 3,600,000 milliseconds. Invalid environment values fail bridge startup instead of silently using defaults. A failed or timed-out round stops the loop.
+
+Both JSON responses and the final SSE event include `open_cursor.goal`: `status` (`complete`, `blocked`, or `budget_exhausted`), `thread_id`, `rounds_used`, and `max_rounds`. Blocked and exhausted runs also include `resume_command`. Streaming output ends with a visible outcome summary and continuation instructions, without repeating earlier round reports. `complete` reflects the agent's final marker; it is not an independent verification of its work.
 
 Automatic routing recognizes common English and Japanese analysis, implementation, verification, and continuation terms. Explicit routing takes precedence. Auto treats side effects as a hard capability constraint: an implementation request is never reported as completed through MiMo, and a failed/partially completed writer run is never silently retried as a response-only success.
 
@@ -384,6 +388,8 @@ Several properties are validated as invariants rather than freely configurable k
 | combined child stdout/stderr | 8 MiB |
 | per-agent execution timeout | 10 minutes |
 | SIGTERM → SIGKILL grace | 1.5 seconds |
+
+On POSIX systems, each agent runs in its own process group. Cancellation, timeout, output-limit failures and bridge shutdown stop that group, including ordinary descendant commands. Escalation still applies after the CLI leader exits; a cancelled run releases its reservation only after its process cleanup completes. Windows currently stops the direct CLI process. Commands that deliberately create a new session can escape process-group cleanup. Early prompt-pipe closure and streaming/formatting exceptions reject the affected execution instead of crashing the bridge.
 
 `GET /health` and `GET /v1/agents` expose non-sensitive execution state such as active execution count and configured limits. Prompts and workspace paths are not included.
 

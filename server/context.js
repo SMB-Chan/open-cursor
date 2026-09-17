@@ -452,9 +452,7 @@ async function withIsolatedDirectory(callback) {
 export {
   buildGitReviewContext,
   buildWorkspaceContext,
-  contextLimits,
   getGitHead,
   isSecretPath,
-  scoreContextFile,
   withIsolatedDirectory,
 };

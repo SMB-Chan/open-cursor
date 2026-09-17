@@ -313,14 +313,13 @@ function runProcess({
   });
 }
 
-function runCodexSession({ threadId, forkFrom, prompt, cwd, model, signal, onChunk, timeoutMs } = {}, execute = runProcess) {
+function runCodexSession({ threadId, prompt, cwd, model, signal, onChunk, timeoutMs } = {}, execute = runProcess) {
   const args = ["exec"];
-  if (threadId || forkFrom) {
-    // `codex exec resume|fork <id>` accepts a much smaller option set than a
+  if (threadId) {
+    // `codex exec resume <id>` accepts a much smaller option set than a
     // fresh exec: no --color, no -C, no approval flags. The thread inherits
     // its original context; only the prompt is new.
-    args.push(threadId ? "resume" : "fork");
-    args.push(threadId || forkFrom);
+    args.push("resume", threadId);
   } else {
     if (model) args.push("-m", model);
     args.push("-C", cwd || process.cwd(), "--approve-for-me");
@@ -381,6 +380,34 @@ async function runGoalLoop(prompt, { cwd, model, signal, onEvent } = {}, {
   let threadId = null;
   let lastStatus = "continue";
   let lastCode = null;
+  const finish = (status, goalState = null) => {
+    const label = status === "complete" ? "COMPLETE"
+      : status === "blocked" ? "BLOCKED" : "ROUND BUDGET EXHAUSTED";
+    const goal = {
+      status,
+      thread_id: threadId,
+      rounds_used: rounds.length,
+      max_rounds: maxRounds,
+      ...(status !== "complete" ? { resume_command: `codex exec resume ${threadId}` } : {}),
+    };
+    // JSON clients receive the full report below. Streaming clients already
+    // saw each round, so send only the outcome and continuation instructions.
+    emitHeader(onEvent,
+      `\n\n> 🎯 **Goal Loop: ${label}** (${rounds.length}/${maxRounds} rounds)\n` +
+      (goal.resume_command ? `> Continue this thread: \`${goal.resume_command}\`\n` : ""),
+      "goal", "goal");
+    return {
+      content: [
+        `## Goal loop (${rounds.length} round${rounds.length === 1 ? "" : "s"}) — ${label}`,
+        ...(goal.resume_command ? [`Thread ${threadId} can be continued with: ${goal.resume_command}`] : []),
+        ...rounds.map((r) => `### Round ${r.round}\n${stripGoalMarker(r.content)}`),
+        ...(goalState ? [`\nCodex goals status: ${goalState}`] : []),
+      ].join("\n\n"),
+      agent: "goal",
+      code: lastCode,
+      goal,
+    };
+  };
 
   for (let round = 1; round <= maxRounds; round++) {
     if (signal?.aborted) throw new ExecutionAbortedError("Goal loop cancelled before round start");
@@ -440,38 +467,15 @@ async function runGoalLoop(prompt, { cwd, model, signal, onEvent } = {}, {
 
     if (parsed.status === "complete") {
       const goalState = await readStatus(threadId);
-      return {
-        content: [
-          `## Goal loop (${rounds.length} round${rounds.length === 1 ? "" : "s"}) — COMPLETE`,
-          ...rounds.map((r) => `### Round ${r.round}\n${stripGoalMarker(r.content)}`),
-          ...(goalState ? [`\nCodex goals status: ${goalState}`] : []),
-        ].join("\n\n"),
-        agent: "goal",
-        code: lastCode,
-      };
+      return finish("complete", goalState);
     }
 
     if (parsed.status === "blocked") {
-      return {
-        content: [
-          `## Goal loop (${rounds.length} round${rounds.length === 1 ? "" : "s"}) — BLOCKED`,
-          ...rounds.map((r) => `### Round ${r.round}\n${stripGoalMarker(r.content)}`),
-        ].join("\n\n"),
-        agent: "goal",
-        code: lastCode,
-      };
+      return finish("blocked");
     }
   }
 
-  return {
-    content: [
-      `## Goal loop — ROUND BUDGET EXHAUSTED (${maxRounds} rounds, last status: ${lastStatus})`,
-      `Thread ${threadId} can be continued with: codex exec resume ${threadId}`,
-      ...rounds.map((r) => `### Round ${r.round}\n${stripGoalMarker(r.content)}`),
-    ].join("\n\n"),
-    agent: "goal",
-    code: lastCode,
-  };
+  return finish("budget_exhausted");
 }
 
 function mapAntigravityModel(model) {
@@ -622,9 +626,17 @@ async function runMiMo(prompt, { model = process.env.MIMO_MODEL || "mimo-v2.5-pr
 function requireSuccessfulAgent(result) {
   if (result.code === 0) return result;
   const detail = (result.stderr || result.content || "no diagnostic output").trim().slice(-1200);
+  let message = `${result.agent} exited with code ${result.code ?? "null"}: ${detail}`;
+  if (result.agent === "codex" && /usage limit|rate limit/i.test(detail)) {
+    const timeMatch = detail.match(/try again at ([^.\n]+)/i);
+    const resetInfo = timeMatch ? `（再開可能目安: ${timeMatch[1]}）` : "";
+    message = `【OpenAI Codex 利用制限】ChatGPT/Codex の利用上限に達しました${resetInfo}。\n` +
+      `💡 対処法: チャット下部のモード切替で「Autonomous (承認なし全自動)」または「Antigravity (Gemini)」を選択すると、Gemini AI Pro（利用制限なし）を使って今すぐ実装・修正を継続できます。\n\n` +
+      `(${result.agent} exited with code ${result.code ?? "null"}: ${detail})`;
+  }
   throw new HttpError(
     502,
-    `${result.agent} exited with code ${result.code ?? "null"}: ${detail}`
+    message
   );
 }
 
@@ -878,12 +890,12 @@ async function orchestrateMode(prompt, { cwd, mode, model, signal, onEvent } = {
   let selectedMode = isAuto ? taskType.routing : mode;
 
   if (isAuto) {
-    const availability = {
-      codex: await AGENTS.codex.authCheck(),
-      antigravity: await AGENTS.antigravity.authCheck(),
-      mimo: await AGENTS.mimo.authCheck(),
-    };
-    selectedMode = selectAutoMode(taskType, availability);
+    const [codex, antigravity, mimo] = await Promise.all([
+      AGENTS.codex.authCheck(),
+      AGENTS.antigravity.authCheck(),
+      AGENTS.mimo.authCheck(),
+    ]);
+    selectedMode = selectAutoMode(taskType, { codex, antigravity, mimo });
   }
 
   const resolvedInfo = getResolvedModelsForMode(selectedMode, model);
@@ -1522,10 +1534,8 @@ export {
   executionConfig,
   formatCollaborativeResult,
   getCodexModel,
-  getMiMoApiKey,
   markExecutionIdle,
   orchestrate,
-  runMiMo,
   runCodexSession,
   runGoalLoop,
   runProcess,

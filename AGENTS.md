@@ -20,7 +20,6 @@ server/             Node.js HTTP bridge (no external runtime dependencies)
   receipt.js        Non-destructive workspace execution receipts (git evidence)
   monitor.js        Live execution state + LLM quota status
   stats.js          In-memory bridge metrics (uptime, requests, agents)
-  receipt.js        Workspace receipts are observations, never rollback
 mobile/             Localhost-only pairing-token dashboard (own HTTP server)
 bin/                Launchers: open-cursor, open-cursor-app, open-cursor-monitor,
                     stop-bridge, usage, update.sh, agy-open-cursor, install.sh

@@ -4,14 +4,12 @@
 //   - `codex exec <prompt>`            → starts a thread; stderr header carries
 //                                        `session id: <uuid>` for later continuation
 //   - `codex exec resume <id> -`       → continues an existing thread (goal loop round)
-//   - `codex exec fork <id> -`         → branches an existing thread into a new id
 // The goals feature tracks status (active/complete/budget_limited/...) inside
 // `~/.codex/goals_1.sqlite`; this module drives the loop from the bridge side and
 // asks the model itself to declare GOAL_COMPLETE, which keeps the mechanism
 // version-independent.
 
 import { join } from "node:path";
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { runtimeConfig, RuntimeConfigError } from "./config.js";
 
@@ -119,18 +117,14 @@ export function buildGoalContract(goalPrompt, { maxRounds, round, threadId } = {
 }
 
 // Continuation prompt for rounds 2..N: deliberately tiny.
-export function buildGoalRoundPrompt({ round, maxRounds, lastStatus, lastTail }) {
-  const tail = lastTail ? `\n\n[Previous round tail]\n${lastTail}` : "";
+export function buildGoalRoundPrompt({ round, maxRounds, lastStatus }) {
   return [
     `Goal loop round ${round} of at most ${maxRounds}. Continue the goal on this thread.`,
     lastStatus === "blocked"
       ? "The previous round reported being blocked. Re-evaluate: try an alternative approach if possible."
       : "Continue where the previous round left off.",
     "Remember the loop rules: work autonomously and end with the status line.",
-    tail,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].join("\n");
 }
 
 export function goalLoopConfig(overrides = {}) {
@@ -163,25 +157,5 @@ export async function readGoalStatus(threadId) {
     return status || null;
   } catch {
     return null;
-  }
-}
-
-export async function codexCliSupportsResume(codexBin = process.env.CODEX_BIN || "codex") {
-  try {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const result = await promisify(execFile)(codexBin, ["exec", "resume", "--help"], { timeout: 5000 });
-    return /resume/i.test(result.stdout || "");
-  } catch {
-    return false;
-  }
-}
-
-export async function codexAuthPresent() {
-  try {
-    await readFile(join(CODEX_HOME, "auth.json"), "utf-8");
-    return true;
-  } catch {
-    return false;
   }
 }

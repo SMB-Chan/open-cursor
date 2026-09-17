@@ -336,11 +336,9 @@ const runtimeConfig = loadRuntimeConfig();
 applyRuntimeDefaultsToEnv(runtimeConfig);
 
 export {
-  DEFAULT_CONFIG_PATH,
   RuntimeConfigError,
   applyRuntimeDefaultsToEnv,
   expandHome,
-  loadRuntimeConfig,
   parseRuntimeConfig,
   runtimeConfig,
   validateRawConfig,

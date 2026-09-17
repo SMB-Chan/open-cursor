@@ -5,8 +5,8 @@
   "description": "Authenticated mobile companion for Open-Cursor",
   "main": "server.js",
   "scripts": {
-    "check": "node --check server.js && node --check server.test.js",
-    "test": "node --test server.test.js"
+    "check": "node --check server.js && node --check server.test.js && node --check public/chat.js && node --check chat.test.js",
+    "test": "node --test server.test.js chat.test.js"
   },
   "engines": {
     "node": ">=18"

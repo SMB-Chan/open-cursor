@@ -56,7 +56,7 @@ async function assertStopped(pid) {
       // Orphans can wait briefly for init to reap them, but cannot execute code.
       if (/^State:\s+[ZX]/m.test(status)) return;
     } catch (error) {
-      if (error.code === "ENOENT") return;
+      if (error.code === "ENOENT" || error.code === "ESRCH") return;
       throw error;
     }
     await delay(10);

@@ -43,7 +43,10 @@ test("newline escapes survive into the rendered script as escapes", () => {
 
 test("chat HTML renders the core UI structure", () => {
   const { html } = render();
-  for (const id of ['id="messages"', 'id="empty"', 'id="input"', 'id="mode"', 'id="send"', 'id="cancel"', 'id="clear"']) {
+  for (const id of [
+    'id="messages"', 'id="empty"', 'id="input"', 'id="mode"', 'id="send"', 'id="cancel"', 'id="clear"',
+    'id="status-bar"', 'id="bridge-dot"', 'id="bridge-label"', 'id="agents-summary"', 'id="status-details"'
+  ]) {
     assert.ok(html.includes(id), `missing ${id}`);
   }
 });
@@ -102,13 +105,21 @@ function makeElement(tag = "div") {
   return el;
 }
 
-function bootWebview() {
+function bootWebview(options = {}) {
   const { html } = render();
   const match = html.match(/<script nonce="[0-9a-f]+">([\s\S]*?)<\/script>/);
   const script = match[1];
 
   const ids = {};
-  for (const id of ["messages", "empty", "input", "mode", "send", "cancel", "clear"]) {
+  const elementNames = ["messages", "empty", "input", "mode", "send", "cancel", "clear"];
+  if (options.withStatus) {
+    elementNames.push(
+      "status-bar", "bridge-dot", "bridge-label", "agents-summary",
+      "status-toggle-btn", "status-refresh-btn", "status-details",
+      "status-details-content", "empty-status"
+    );
+  }
+  for (const id of elementNames) {
     ids[id] = makeElement(id);
   }
   ids.mode.options = [];
@@ -198,4 +209,43 @@ test("IME composition Enter never sends the draft", () => {
   }
   assert.equal(h.posted.length, 0);
   assert.equal(prevented, false);
+});
+
+test("webview client renders bridge status online and offline", () => {
+  const h = bootWebview({ withStatus: true });
+  assert.ok(h.posted.some((m) => m.type === "getStatus"));
+
+  fireWindowMessage(h, {
+    type: "status",
+    data: {
+      online: true,
+      version: "2.9.2",
+      billing: "per-agent",
+      agents: {
+        codex: { name: "Codex", available: true },
+        antigravity: { name: "Gemini", available: true },
+      },
+      stats: { uptime_seconds: 3665, requests: { total: 10, completed: 10, active: 0, failed: 0 } },
+    },
+  });
+
+  assert.equal(h.ids["bridge-label"].textContent, "Bridge: OK (v2.9.2)");
+  assert.equal(h.ids["bridge-dot"].classList.contains("offline"), false);
+  assert.ok(h.ids["agents-summary"].children.length >= 2);
+
+  // Toggle details button
+  for (const fn of h.ids["status-toggle-btn"]._listeners.click || []) fn();
+  assert.equal(h.ids["status-details"].style.display, "block");
+
+  // Refresh button
+  for (const fn of h.ids["status-refresh-btn"]._listeners.click || []) fn();
+  assert.ok(h.posted.filter((m) => m.type === "getStatus").length >= 2);
+
+  // Now test offline
+  fireWindowMessage(h, {
+    type: "status",
+    data: { online: false, error: "Connection refused" },
+  });
+  assert.equal(h.ids["bridge-label"].textContent, "Bridge: OFFLINE");
+  assert.equal(h.ids["bridge-dot"].classList.contains("offline"), true);
 });

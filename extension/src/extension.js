@@ -306,16 +306,47 @@ async function fetchExecutionReceipt(requestId, options = {}) {
   });
 }
 
+// Single source of truth for the webview status payload. `/v1/stats` is
+// best-effort: the bridge can be healthy before metrics are available.
+async function postBridgeStatus(panel) {
+  const port = config().get("bridgePort", 9876);
+  try {
+    const [health, agents, stats] = await Promise.all([
+      fetchBridge("/health"),
+      fetchBridge("/v1/agents"),
+      fetchBridge("/v1/stats").catch(() => null),
+    ]);
+    panel.webview.postMessage({
+      type: "status",
+      data: {
+        online: true,
+        version: health.version,
+        billing: health.billing,
+        status: health.status,
+        agents: agents.agents || {},
+        stats: stats || {},
+        port,
+      },
+    });
+  } catch (error) {
+    panel.webview.postMessage({
+      type: "status",
+      data: { online: false, error: error.message, port },
+    });
+  }
+}
+
 async function streamMessage(context, prompt, mode, signal, onEvent, onStarted, preferredRequestId) {
   await ensureBridge(context);
 
+  const targetWorkspace = workspacePath();
   const selectedMode = mode || config().get("defaultAgent", "collaborative");
   const response = await fetch(`${bridgeUrl()}/v1/chat/completions`, {
     method: "POST",
     signal,
     headers: {
       "Content-Type": "application/json",
-      "X-Workspace-Path": workspacePath(),
+      "X-Workspace-Path": encodeURI(targetWorkspace),
       "X-Agent-Mode": selectedMode,
       ...(preferredRequestId ? { "X-Open-Cursor-Request-Id": preferredRequestId } : {}),
     },
@@ -323,6 +354,7 @@ async function streamMessage(context, prompt, mode, signal, onEvent, onStarted, 
       model: selectedMode,
       messages: [{ role: "user", content: prompt }],
       stream: true,
+      workspace: targetWorkspace,
     }),
   });
 
@@ -488,6 +520,16 @@ function registerChatCommand(context) {
     });
 
     panel.webview.onDidReceiveMessage(async (msg) => {
+      if (msg.type === "getStatus" || msg.type === "startBridge") {
+        if (msg.type === "startBridge") {
+          try {
+            await startManagedBridge(context, { notify: false });
+          } catch {}
+        }
+        await postBridgeStatus(panel);
+        return;
+      }
+
       if (msg.type === "cancel") {
         currentRequest?.controller.abort();
         return;
@@ -642,6 +684,23 @@ function activate(context) {
     isBridgeRunning().then((running) =>
       updateStatus(running ? "online" : "offline", running ? "Bridge online (external)" : "Bridge offline")
     );
+  }
+
+  if (config().get("autoOpenChat", false)) {
+    const tryOpenChat = (retries = 3) => {
+      vscode.commands.executeCommand("openCursor.chat").then(
+        () => {
+          outputChannel?.appendLine("[chat] autoOpenChat: Chat panel opened");
+        },
+        (error) => {
+          outputChannel?.appendLine(`[chat] autoOpenChat attempt failed: ${error?.message || error}`);
+          if (retries > 0) {
+            setTimeout(() => tryOpenChat(retries - 1), 1500);
+          }
+        }
+      );
+    };
+    setTimeout(() => tryOpenChat(3), 1500);
   }
 }
 

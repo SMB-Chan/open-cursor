@@ -32,11 +32,14 @@ async function main() {
     throw new Error(`${extensionsJson} must contain a JSON array`);
   }
 
+  const directory = dirname(extensionsJson);
+  const locationPath = join(directory, relativeLocation);
+
   const preserved = entries.filter((entry) => entry?.identifier?.id !== extensionId);
   preserved.push({
     identifier: { id: extensionId },
     version: manifest.version,
-    location: { $mid: 1, path: extensionPath, scheme: "file" },
+    location: { $mid: 1, path: locationPath, scheme: "file" },
     relativeLocation,
     metadata: {
       installedTimestamp: Date.now(),
@@ -44,7 +47,6 @@ async function main() {
     },
   });
 
-  const directory = dirname(extensionsJson);
   const tempPath = join(directory, `.${basename(extensionsJson)}.open-cursor-${process.pid}.tmp`);
   await writeFile(tempPath, `${JSON.stringify(preserved, null, 2)}\n`, { mode: 0o600 });
   await rename(tempPath, extensionsJson);

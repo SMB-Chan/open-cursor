@@ -42,6 +42,7 @@ async function consumeSse(response, onEvent = () => {}) {
   const processBlock = (block) => {
     const parsed = parseSseBlock(block);
     if (parsed.kind === "done") return true;
+    if (parsed.kind === "invalid") throw new Error("Bridge returned a malformed streaming event");
     if (parsed.kind !== "event") return false;
 
     if (parsed.delta) content += parsed.delta;
@@ -49,27 +50,39 @@ async function consumeSse(response, onEvent = () => {}) {
     return false;
   };
 
-  while (!done) {
-    const next = await reader.read();
-    if (next.done) {
-      buffer += decoder.decode();
-      break;
-    }
-
-    buffer += decoder.decode(next.value, { stream: true });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() || "";
-
-    for (const block of blocks) {
-      if (processBlock(block)) {
-        done = true;
+  try {
+    while (!done) {
+      const next = await reader.read();
+      if (next.done) {
+        buffer += decoder.decode();
         break;
       }
-    }
-  }
 
-  if (!done && buffer.trim()) processBlock(buffer);
-  return content;
+      buffer += decoder.decode(next.value, { stream: true });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+
+      for (const block of blocks) {
+        if (processBlock(block)) {
+          done = true;
+          break;
+        }
+      }
+    }
+
+    if (!done && buffer.trim()) done = processBlock(buffer);
+    if (!done) throw new Error("Bridge stream ended before completion; the execution result is unconfirmed");
+    return content;
+  } finally {
+    // A DONE marker, parse error or consumer exception can precede transport
+    // EOF. Release the connection and reader in every path.
+    try { await reader.cancel(); } catch {}
+    reader.releaseLock();
+  }
 }
 
-module.exports = { consumeSse, parseSseBlock };
+if (typeof module === "object" && module.exports) {
+  module.exports = { consumeSse, parseSseBlock };
+} else {
+  globalThis.OpenCursorSse = { consumeSse, parseSseBlock };
+}

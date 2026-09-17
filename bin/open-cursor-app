@@ -1,108 +1,59 @@
 #!/bin/bash
-# Open-Cursor Application Launcher
-# 課金なしのマルチエージェントコーディングIDE
+# GUI entry point: share the CLI's runtime, ports and startup validation.
+set -euo pipefail
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/runtime-env.sh"
+if [ -z "${OPEN_CURSOR_WORKSPACE:-}" ]; then
+  for argument in "$@"; do
+    if [ -d "$argument" ]; then
+      export OPEN_CURSOR_WORKSPACE="$(readlink -f -- "$argument")"
+      break
+    elif [ -f "$argument" ]; then
+      export OPEN_CURSOR_WORKSPACE="$(dirname -- "$(readlink -f -- "$argument")")"
+      break
+    fi
+  done
+fi
+export OPEN_CURSOR_WORKSPACE="${OPEN_CURSOR_WORKSPACE:-$BRIDGE_DIR}"
+if ! "$BRIDGE_DIR/bin/open-cursor"; then
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -i "$BRIDGE_DIR/share/open-cursor.svg" "Open-Cursor" "起動に失敗しました。$RUNTIME_DIR/bridge.log を確認してください。" || true
+  fi
+  exit 1
+fi
+if [ -n "${OPEN_CURSOR_EDITOR_BIN:-}" ]; then
+  exec "$OPEN_CURSOR_EDITOR_BIN" "$@"
+fi
 
-BRIDGE_DIR="$HOME/.cursor-codex-bridge"
-BRIDGE_PORT="${BRIDGE_PORT:-9876}"
-BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
-LOG_FILE="$BRIDGE_DIR/bridge.log"
-PID_FILE="$BRIDGE_DIR/bridge.pid"
-
-# ── Ensure PATH includes ~/.local/bin and Node.js (GUI session support) ──
-
-export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
-
-if ! command -v node &>/dev/null; then
-  # Auto-detect node from NVM if installed
-  for n in "$HOME"/.nvm/versions/node/*/bin/node; do
-    if [ -x "$n" ]; then
-      export PATH="$(dirname "$n"):$PATH"
+CURSOR_BIN=""
+if command -v cursor >/dev/null 2>&1; then
+  CURSOR_BIN="cursor"
+else
+  for candidate in /usr/bin/cursor /usr/share/cursor/bin/cursor /opt/Cursor/AppRun; do
+    if [ -x "$candidate" ]; then
+      CURSOR_BIN="$candidate"
+      break
     fi
   done
 fi
 
-if ! command -v node &>/dev/null && [ -s "$HOME/.nvm/nvm.sh" ]; then
-  export NVM_DIR="$HOME/.nvm"
-  # shellcheck source=/dev/null
-  . "$HOME/.nvm/nvm.sh" --no-use 2>/dev/null || true
-  nvm use default &>/dev/null || nvm use stable &>/dev/null || true
+if [ -z "$CURSOR_BIN" ]; then
+  echo "Cursor が見つかりません。Cursor をインストールして再起動してください。" >&2
+  exit 1
 fi
 
-NODE_BIN="$(command -v node 2>/dev/null || true)"
+HAS_MODE_FLAG=0
+for arg in "$@"; do
+  case "$arg" in
+    --classic|--glass) HAS_MODE_FLAG=1; break ;;
+  esac
+done
 
-# ── Helpers ──────────────────────────────────────────────
-
-is_bridge_running() {
-  curl -sf --connect-timeout 1 "$BRIDGE_URL/health" >/dev/null 2>&1
-}
-
-notify() {
-  local icon="$BRIDGE_DIR/share/open-cursor.svg"
-  if [ ! -f "$icon" ]; then
-    icon="co.anysphere.cursor"
-  fi
-  if command -v notify-send &>/dev/null; then
-    notify-send -i "$icon" "Open-Cursor" "$1" 2>/dev/null || true
-  fi
-}
-
-# ── Start bridge & mobile dashboard if not running ───────
-
-is_mobile_running() {
-  curl -sf --connect-timeout 1 "http://127.0.0.1:9880/healthz" >/dev/null 2>&1
-}
-
-if ! is_bridge_running; then
-  if [ -z "$NODE_BIN" ]; then
-    notify "Node.js が見つかりません。Node.js をインストールするか PATH を確認してください。"
-    echo "Error: Node.js not found in PATH" >&2
+if [ $HAS_MODE_FLAG -eq 0 ]; then
+  if [ $# -eq 0 ]; then
+    exec "$CURSOR_BIN" --classic "$OPEN_CURSOR_WORKSPACE"
   else
-    cd "$BRIDGE_DIR/server"
-    setsid "$NODE_BIN" index.js > "$LOG_FILE" 2>&1 &
-    BRIDGE_PID=$!
-    echo "$BRIDGE_PID" > "$PID_FILE"
-
-    # Wait for startup (max 10s)
-    for i in $(seq 1 20); do
-      if is_bridge_running; then
-        break
-      fi
-      sleep 0.5
-    done
-
-    if is_bridge_running; then
-      notify "ブリッジサーバーが起動しました（ポート $BRIDGE_PORT）"
-    else
-      notify "ブリッジサーバーの起動に失敗しました。$LOG_FILE を確認してください。"
-    fi
+    exec "$CURSOR_BIN" --classic "$@"
   fi
 else
-  # Bridge already running, just update PID file
-  ps aux | grep "node index.js" | grep -v grep | awk '{print $2}' > "$PID_FILE" 2>/dev/null
-fi
-
-if ! is_mobile_running && [ -d "$BRIDGE_DIR/mobile" ] && [ -n "$NODE_BIN" ]; then
-  cd "$BRIDGE_DIR/mobile"
-  setsid "$NODE_BIN" server.js > "$BRIDGE_DIR/mobile.log" 2>&1 &
-  echo $! > "$BRIDGE_DIR/mobile.pid"
-fi
-
-# ── Open Cursor ──────────────────────────────────────────
-
-if command -v cursor &>/dev/null; then
-  exec cursor "$@"
-elif [ -x /usr/bin/cursor ]; then
-  exec /usr/bin/cursor "$@"
-elif [ -x /usr/share/cursor/bin/cursor ]; then
-  exec /usr/share/cursor/bin/cursor "$@"
-elif [ -f /opt/Cursor/AppRun ]; then
-  exec /opt/Cursor/AppRun "$@"
-elif [ -f /usr/share/applications/cursor.desktop ]; then
-  gtk-launch cursor 2>/dev/null
-  while is_bridge_running; do sleep 5; done
-else
-  notify "Cursor が見つかりません。手動で Cursor を起動してください。"
-  echo "Open-Cursor bridge running at $BRIDGE_URL"
-  echo "Open Cursor manually and use the Open-Cursor extension."
-  while is_bridge_running; do sleep 5; done
+  exec "$CURSOR_BIN" "$@"
 fi

@@ -14,28 +14,14 @@
 
 set -euo pipefail
 
-export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
-
-if ! command -v node &>/dev/null; then
-  for n in "$HOME"/.nvm/versions/node/*/bin/node; do
-    if [ -x "$n" ]; then
-      export PATH="$(dirname "$n"):$PATH"
-    fi
-  done
-fi
-
-BRIDGE_DIR="$HOME/.cursor-codex-bridge"
-if [ -L "$BRIDGE_DIR" ]; then
-  REPO_DIR="$(readlink -f "$BRIDGE_DIR")"
-elif [ -f "$BRIDGE_DIR/server/index.js" ] && [ -w "$BRIDGE_DIR" ]; then
-  REPO_DIR="$BRIDGE_DIR"
-elif [ -d "/opt/open-cursor" ]; then
-  # Packaged install: /opt is root-owned, so self-update goes through apt.
-  echo "Packaged installation detected (/opt/open-cursor)."
-  echo "Self-update via git is disabled; update with: sudo apt upgrade open-cursor"
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/runtime-env.sh"
+REPO_DIR="$BRIDGE_DIR"
+if [ ! -e "$REPO_DIR/.git" ]; then
+  echo "This installation has no Git metadata. Install a newer Open-Cursor package to update it."
   exit 0
-else
-  echo "No Open-Cursor installation found (expected $BRIDGE_DIR or /opt/open-cursor)."
+fi
+if [ -z "$NODE_BIN" ]; then
+  echo "Node.js is required to validate the update." >&2
   exit 1
 fi
 
@@ -51,7 +37,7 @@ if [ "${1:-}" = "--yes" ]; then
   ASSUME_YES=true
 fi
 
-OLD_VERSION="$(node -p "require('$REPO_DIR/server/package.json').version" 2>/dev/null || echo unknown)"
+OLD_VERSION="$(node -p "require(process.argv[1]).version" "$REPO_DIR/server/package.json" 2>/dev/null || echo unknown)"
 
 echo -e "${CYAN}${BOLD}Open-Cursor Update (current: v$OLD_VERSION)${NC}"
 echo -e "Repository: $REPO_DIR"
@@ -80,7 +66,7 @@ else
   echo -e "${YELLOW}Skipping git pull; updating running services with current code.${NC}"
 fi
 
-NEW_VERSION="$(node -p "require('$REPO_DIR/server/package.json').version" 2>/dev/null || echo unknown)"
+NEW_VERSION="$(node -p "require(process.argv[1]).version" "$REPO_DIR/server/package.json" 2>/dev/null || echo unknown)"
 
 # ── 2. Checks & tests ────────────────────────────────────
 
@@ -88,6 +74,10 @@ echo ""
 echo -e "${YELLOW}[1/3] Syntax checks & tests...${NC}"
 
 cd "$REPO_DIR/server"
+npm run check >/dev/null
+npm test 2>&1 | tail -5
+
+cd "$REPO_DIR/mobile"
 npm run check >/dev/null
 npm test 2>&1 | tail -5
 
@@ -101,25 +91,23 @@ echo -e "  ${GREEN}✓${NC} All checks passed"
 echo ""
 echo -e "${YELLOW}[2/3] Restarting bridge...${NC}"
 
-"$REPO_DIR/bin/stop-bridge" >/dev/null 2>&1 || true
-sleep 1
-# stop-bridge が PID ファイルを消すため、万が一の残留プロセスをポートから検出して終了
-for pid in $(ss -tlnp 2>/dev/null | grep -E ':(9876|9880)\b' | grep -oP 'pid=\K[0-9]+' | sort -u); do
-  kill "$pid" 2>/dev/null || true
-done
-sleep 1
+BRIDGE_PORT="$(node -e "import(require('node:url').pathToFileURL(process.argv[1]).href).then(({runtimeConfig}) => process.stdout.write(String(runtimeConfig.bridge.port)))" "$REPO_DIR/server/config.js")"
+BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
+
+# Refuse an unverified PID; never kill other services by their port number.
+"$REPO_DIR/bin/stop-bridge"
 
 cd "$REPO_DIR"
 "$REPO_DIR/bin/open-cursor" > /dev/null 2>&1
 
 for i in $(seq 1 20); do
-  if curl -sf --connect-timeout 1 http://127.0.0.1:9876/health >/dev/null 2>&1; then
+  if curl -sf --max-time 3 --connect-timeout 1 "$BRIDGE_URL/health" >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
 done
 
-if ! curl -sf http://127.0.0.1:9876/health >/dev/null 2>&1; then
+if ! curl -sf --max-time 3 "$BRIDGE_URL/health" >/dev/null 2>&1; then
   echo -e "  ${RED}✗ Bridge failed to start. Check: $BRIDGE_DIR/bridge.log${NC}"
   exit 1
 fi
@@ -132,7 +120,7 @@ echo -e "${YELLOW}[3/3] Refreshing extension link...${NC}"
 
 EXT_DIR="$HOME/.cursor/extensions"
 if [ -f "$EXT_DIR/extensions.json" ]; then
-  EXT_VERSION="$(node -p "require('$REPO_DIR/extension/package.json').version")"
+  EXT_VERSION="$(node -p "require(process.argv[1]).version" "$REPO_DIR/extension/package.json")"
   node "$REPO_DIR/scripts/register-extension.mjs" \
     "$EXT_DIR/extensions.json" "$REPO_DIR/extension" >/dev/null
   echo -e "  ${GREEN}✓${NC} Extension registry updated: open-cursor.open-cursor-bridge@$EXT_VERSION"

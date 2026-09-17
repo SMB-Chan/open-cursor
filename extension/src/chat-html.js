@@ -103,6 +103,30 @@ function getChatHTML(webview) {
     button:focus-visible, #mode:focus-visible, .run-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
     #cancel { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
     #clear { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+    /* Embedded Status Bar and Details */
+    .status-bar { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 5px 10px; margin-bottom: 6px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-sideBar-background); font-size: 11px; }
+    .status-main { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .status-dot { font-size: 11px; line-height: 1; color: var(--vscode-testing-iconPassed); }
+    .status-dot.offline { color: var(--vscode-errorForeground); }
+    .status-sep { color: var(--vscode-descriptionForeground); opacity: 0.6; }
+    .status-text { color: var(--vscode-descriptionForeground); }
+    .status-agents-strip { display: flex; gap: 4px; align-items: center; }
+    .agent-chip { font-size: 10px; line-height: 1; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--vscode-widget-border); background: var(--vscode-editor-background); color: var(--vscode-descriptionForeground); white-space: nowrap; }
+    .agent-chip.ready { color: var(--vscode-testing-iconPassed); border-color: var(--vscode-testing-iconPassed); }
+    .agent-chip.not-ready { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+    .status-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    .status-action-btn { padding: 2px 8px; font-size: 11px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--vscode-widget-border); border-radius: 4px; cursor: pointer; }
+    .status-action-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .status-details { flex: 0 0 auto; margin-bottom: 8px; padding: 8px 10px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editor-inactiveSelectionBackground); font-size: 11px; line-height: 1.5; }
+    .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+    .status-section { background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 6px 8px; }
+    .status-section-title { font-weight: 600; color: var(--vscode-foreground); margin-bottom: 4px; padding-bottom: 2px; border-bottom: 1px solid var(--vscode-widget-border); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .status-row { display: flex; justify-content: space-between; gap: 8px; margin: 2px 0; color: var(--vscode-descriptionForeground); }
+    .status-row-val { color: var(--vscode-foreground); font-family: var(--vscode-editor-font-family); }
+    .status-row-val.ok { color: var(--vscode-testing-iconPassed); }
+    .status-row-val.err { color: var(--vscode-errorForeground); }
+    .empty-status-card { margin: 16px auto 0; max-width: 460px; text-align: left; }
+    .status-start-btn { margin-top: 6px; padding: 4px 10px; font-size: 11px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; }
     @media (max-width: 560px) {
       #input-area { grid-template-columns: 1fr; }
       #actions { justify-content: flex-end; }
@@ -111,11 +135,27 @@ function getChatHTML(webview) {
   </style>
 </head>
 <body>
+  <div id="status-bar" class="status-bar">
+    <div class="status-main">
+      <span id="bridge-dot" class="status-dot offline">●</span>
+      <span id="bridge-label" class="status-text">Bridge: checking…</span>
+      <span class="status-sep">·</span>
+      <span id="agents-summary" class="status-agents-strip"></span>
+    </div>
+    <div class="status-actions">
+      <button id="status-toggle-btn" class="status-action-btn" type="button" title="Toggle detailed status">Status ▾</button>
+      <button id="status-refresh-btn" class="status-action-btn" type="button" title="Refresh status">↻</button>
+    </div>
+  </div>
+  <div id="status-details" class="status-details" style="display: none;">
+    <div id="status-details-content"></div>
+  </div>
   <div id="messages" role="log" aria-live="polite" aria-label="Conversation">
     <div id="empty">
       <div class="empty-title">Open-Cursor Chat</div>
       <div class="empty-hint">Choose a routing mode below, then describe your task.</div>
       <div class="empty-hint">Enter to send · Shift+Enter for a new line · Esc stops a running agent</div>
+      <div id="empty-status" class="empty-status-card"></div>
     </div>
   </div>
   <div id="input-area">

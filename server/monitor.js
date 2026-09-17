@@ -1,4 +1,4 @@
-import { readFile, writeFile, stat, readdir, mkdir } from "node:fs/promises";
+import { writeFile, stat, readdir, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve, basename } from "node:path";
 import { homedir } from "node:os";
@@ -7,11 +7,11 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
-export const STATE_DIR =
+const STATE_DIR =
   process.env.OPEN_CURSOR_RUNTIME_DIR
     ? join(process.env.OPEN_CURSOR_RUNTIME_DIR, "run")
     : join(homedir(), ".cursor-codex-bridge", "run");
-export const STATE_FILE = join(STATE_DIR, "execution-state.json");
+const STATE_FILE = join(STATE_DIR, "execution-state.json");
 
 let inMemoryState = {
   active: false,
@@ -53,7 +53,7 @@ export function getExecutionState() {
   return { ...inMemoryState };
 }
 
-export async function saveState() {
+async function saveState() {
   try {
     if (!existsSync(STATE_DIR)) {
       await mkdir(STATE_DIR, { recursive: true });
@@ -62,24 +62,13 @@ export async function saveState() {
   } catch {}
 }
 
-export async function loadState() {
-  try {
-    if (existsSync(STATE_FILE)) {
-      const raw = await readFile(STATE_FILE, "utf8");
-      const data = JSON.parse(raw);
-      inMemoryState = { ...inMemoryState, ...data };
-    }
-  } catch {}
-  return inMemoryState;
-}
-
 let cachedUsage = null;
 let lastUsageFetch = 0;
 const USAGE_CACHE_TTL_MS = 4000;
 
-export async function fetchUsageData(forceFresh = false) {
+async function fetchUsageData() {
   const now = Date.now();
-  if (!forceFresh && cachedUsage && now - lastUsageFetch < USAGE_CACHE_TTL_MS) {
+  if (cachedUsage && now - lastUsageFetch < USAGE_CACHE_TTL_MS) {
     return cachedUsage;
   }
   const usageCmd = process.env.OPEN_CURSOR_USAGE_CMD || "usage --json";
@@ -176,13 +165,15 @@ export async function getWorkspaceStatus(workspacePath) {
     recentFiles: [],
   };
 
-  // 1. Git status if available
+  // 1. Git status if available (branch + porcelain run in parallel; in a Git
+  // work tree both succeed or fail together).
   try {
-    const { stdout: branch } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: targetDir });
+    const [{ stdout: branch }, { stdout: status }] = await Promise.all([
+      execAsync("git rev-parse --abbrev-ref HEAD", { cwd: targetDir }),
+      execAsync("git status --porcelain", { cwd: targetDir }),
+    ]);
     info.isGitRepo = true;
     info.gitBranch = branch.trim();
-
-    const { stdout: status } = await execAsync("git status --porcelain", { cwd: targetDir });
     const lines = status.split("\n").filter((l) => l.trim().length > 0);
     info.modifiedFiles = lines.map((line) => {
       const statusCode = line.slice(0, 2).trim();
@@ -200,22 +191,25 @@ export async function getWorkspaceStatus(workspacePath) {
   // 2. Scan recent files in workspace (essential for non-git folders like ~/ドキュメント/DEMO)
   try {
     const entries = await readdir(targetDir, { withFileTypes: true });
-    const fileStats = [];
-    for (const entry of entries) {
-      if (entry.isFile() && !entry.name.startsWith(".")) {
-        const full = join(targetDir, entry.name);
-        try {
-          const s = await stat(full);
-          fileStats.push({
-            name: entry.name,
-            fullPath: full,
-            sizeBytes: s.size,
-            mtimeMs: s.mtimeMs,
-            mtime: s.mtime.toISOString(),
-          });
-        } catch {}
-      }
-    }
+    const fileStats = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && !entry.name.startsWith("."))
+        .map(async (entry) => {
+          const full = join(targetDir, entry.name);
+          try {
+            const s = await stat(full);
+            return {
+              name: entry.name,
+              fullPath: full,
+              sizeBytes: s.size,
+              mtimeMs: s.mtimeMs,
+              mtime: s.mtime.toISOString(),
+            };
+          } catch {
+            return null;
+          }
+        })
+    );
     fileStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
     info.recentFiles = fileStats.slice(0, 10);
   } catch {}

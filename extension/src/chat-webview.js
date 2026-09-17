@@ -33,6 +33,16 @@ const sendButton = document.getElementById("send");
 const cancelButton = document.getElementById("cancel");
 const clearButton = document.getElementById("clear");
 
+const statusBar = document.getElementById("status-bar");
+const bridgeDot = document.getElementById("bridge-dot");
+const bridgeLabel = document.getElementById("bridge-label");
+const agentsSummary = document.getElementById("agents-summary");
+const statusToggleBtn = document.getElementById("status-toggle-btn");
+const statusRefreshBtn = document.getElementById("status-refresh-btn");
+const statusDetails = document.getElementById("status-details");
+const statusDetailsContent = document.getElementById("status-details-content");
+const emptyStatus = document.getElementById("empty-status");
+
 const PHASE_LABELS = {
   plan: "Plan",
   implement: "Implement",
@@ -118,6 +128,163 @@ function restoreSession() {
 function updateEmptyState() {
   if (!empty) return;
   empty.style.display = messages.querySelector(".msg, .assistant-card") ? "none" : "";
+}
+
+function formatUptime(seconds) {
+  const s = Number(seconds) || 0;
+  if (s >= 3600) return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+  if (s >= 60) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
+const AGENT_SHORT_NAMES = { antigravity: "Gemini", codex: "Codex", mimo: "MiMo" };
+
+// "READY" | "AUTH ONLY" | "NOT AUTH" | "DISABLED" from an agent status payload.
+function agentState(a) {
+  if (a.available) return "READY";
+  if (a.authenticated) return "AUTH ONLY";
+  return a.enabled ? "NOT AUTH" : "DISABLED";
+}
+
+function makeStatusSection(titleText) {
+  const section = document.createElement("div");
+  section.className = "status-section";
+  const title = document.createElement("div");
+  title.className = "status-section-title";
+  title.textContent = titleText;
+  section.appendChild(title);
+  return section;
+}
+
+function addStatusRow(parent, labelText, valText, valClass = "") {
+  const row = document.createElement("div");
+  row.className = "status-row";
+  const label = document.createElement("span");
+  label.textContent = labelText;
+  const value = document.createElement("span");
+  value.className = "status-row-val" + (valClass ? " " + valClass : "");
+  value.textContent = valText;
+  row.appendChild(label);
+  row.appendChild(value);
+  parent.appendChild(row);
+  return row;
+}
+
+function makeStartBridgeButton() {
+  const btn = document.createElement("button");
+  btn.className = "status-start-btn";
+  btn.textContent = "Start Bridge";
+  btn.addEventListener("click", () => {
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    vscode.postMessage({ type: "startBridge" });
+  });
+  return btn;
+}
+
+function renderOfflineStatus(data) {
+  bridgeDot.classList.add("offline");
+  bridgeLabel.textContent = "Bridge: OFFLINE";
+  if (agentsSummary) agentsSummary.textContent = "";
+
+  if (statusDetailsContent) {
+    statusDetailsContent.textContent = "";
+    const row = document.createElement("div");
+    row.className = "status-row";
+    const lbl = document.createElement("span");
+    lbl.textContent = "Bridge is not responding on 127.0.0.1:" + (data?.port || 9876);
+    row.appendChild(lbl);
+    statusDetailsContent.appendChild(row);
+    statusDetailsContent.appendChild(makeStartBridgeButton());
+  }
+
+  if (emptyStatus) {
+    emptyStatus.textContent = "";
+    const card = makeStatusSection("Bridge Status: Offline");
+    const desc = document.createElement("div");
+    desc.className = "status-row";
+    desc.textContent = "The local multi-agent bridge is not running.";
+    card.appendChild(desc);
+    card.appendChild(makeStartBridgeButton());
+    emptyStatus.appendChild(card);
+  }
+}
+
+function renderOnlineStatus(data) {
+  bridgeDot.classList.remove("offline");
+  bridgeLabel.textContent = "Bridge: OK (v" + (data.version || "2.9.2") + ")";
+
+  const agents = data.agents || {};
+  const agentKeys = Object.keys(agents);
+
+  // Summary strip
+  if (agentsSummary) {
+    agentsSummary.textContent = "";
+    for (const key of agentKeys) {
+      const a = agents[key];
+      const chip = document.createElement("span");
+      chip.className = "agent-chip " + (a.available ? "ready" : "not-ready");
+      chip.textContent = (AGENT_SHORT_NAMES[key] || key) + ": " +
+        (a.available ? "READY" : a.authenticated ? "AUTH ONLY" : "OFFLINE");
+      agentsSummary.appendChild(chip);
+    }
+  }
+
+  // Detailed view
+  if (statusDetailsContent) {
+    statusDetailsContent.textContent = "";
+    const grid = document.createElement("div");
+    grid.className = "status-grid";
+
+    const runtime = makeStatusSection("Bridge & Runtime");
+    addStatusRow(runtime, "Status", "ONLINE", "ok");
+    addStatusRow(runtime, "Version", "v" + (data.version || "2.9.2"));
+    addStatusRow(runtime, "Uptime", formatUptime(data.stats?.uptime_seconds || 0));
+    addStatusRow(runtime, "Billing", data.billing || "per-agent");
+    addStatusRow(runtime, "Endpoint", "127.0.0.1:" + (data.port || 9876));
+    grid.appendChild(runtime);
+
+    const connected = makeStatusSection("Connected Agents");
+    for (const key of agentKeys) {
+      const a = agents[key];
+      addStatusRow(connected, a.name || key, agentState(a), a.available ? "ok" : "err");
+    }
+    grid.appendChild(connected);
+
+    const metrics = makeStatusSection("Request Metrics");
+    const reqs = data.stats?.requests || {};
+    addStatusRow(metrics, "Total", String(reqs.total ?? 0));
+    addStatusRow(metrics, "Completed", String(reqs.completed ?? 0), "ok");
+    addStatusRow(metrics, "Active", String(reqs.active ?? 0));
+    addStatusRow(metrics, "Failed", String(reqs.failed ?? 0), reqs.failed ? "err" : "");
+    if (data.stats?.last_request) {
+      const lr = data.stats.last_request;
+      addStatusRow(metrics, "Last Run", `${lr.mode} (${lr.duration_ms}ms)`);
+    }
+    grid.appendChild(metrics);
+
+    statusDetailsContent.appendChild(grid);
+  }
+
+  // Empty-state overview card
+  if (emptyStatus) {
+    emptyStatus.textContent = "";
+    const card = makeStatusSection("Multi-Agent System Status");
+    const grid = document.createElement("div");
+    grid.className = "status-grid";
+    for (const key of agentKeys) {
+      const a = agents[key];
+      addStatusRow(grid, a.name || key, a.available ? "READY" : "OFFLINE", a.available ? "ok" : "err");
+    }
+    card.appendChild(grid);
+    emptyStatus.appendChild(card);
+  }
+}
+
+function renderStatus(data) {
+  if (!bridgeDot || !bridgeLabel) return;
+  if (!data || !data.online) renderOfflineStatus(data);
+  else renderOnlineStatus(data);
 }
 
 function autoGrow() {
@@ -641,6 +808,16 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("message", (event) => {
   const msg = event.data;
+  if (!msg) return;
+
+  if (msg.type === "status") {
+    if (statusRefreshBtn && statusRefreshBtn.textContent === "…") {
+      statusRefreshBtn.textContent = "↻";
+    }
+    renderStatus(msg.data);
+    return;
+  }
+
   if (msg.requestId !== activeRequestId) return;
 
   if (msg.type === "begin") {
@@ -721,3 +898,33 @@ input.addEventListener("input", () => {
   schedulePersist();
 });
 mode.addEventListener("change", () => persistSession());
+
+if (statusToggleBtn && statusDetails) {
+  statusToggleBtn.addEventListener("click", () => {
+    const isHidden = statusDetails.style.display === "none" || !statusDetails.style.display;
+    statusDetails.style.display = isHidden ? "block" : "none";
+    statusToggleBtn.textContent = isHidden ? "Details ▴" : "Status ▾";
+  });
+}
+
+if (statusRefreshBtn) {
+  statusRefreshBtn.addEventListener("click", () => {
+    statusRefreshBtn.textContent = "…";
+    vscode.postMessage({ type: "getStatus" });
+    setTimeout(() => {
+      if (statusRefreshBtn.textContent === "…") statusRefreshBtn.textContent = "↻";
+    }, 1200);
+  });
+}
+
+if (statusBar || bridgeDot) {
+  try {
+    vscode.postMessage({ type: "getStatus" });
+    const statusPollTimer = setInterval(() => {
+      vscode.postMessage({ type: "getStatus" });
+    }, 8000);
+    if (statusPollTimer && typeof statusPollTimer.unref === "function") {
+      statusPollTimer.unref();
+    }
+  } catch {}
+}

@@ -6,7 +6,6 @@ import {
   GOAL_COMPLETE_MARKER,
   buildGoalContract,
   buildGoalRoundPrompt,
-  codexCliSupportsResume,
   extractSessionId,
   goalLoopConfig,
   parseGoalRoundStatus,
@@ -107,10 +106,9 @@ test("buildGoalContract carries goal, budget and thread information", () => {
 });
 
 test("buildGoalRoundPrompt stays tiny and references the previous outcome", () => {
-  const prompt = buildGoalRoundPrompt({ round: 2, maxRounds: 8, lastStatus: "continue", lastTail: "next: run tests" });
+  const prompt = buildGoalRoundPrompt({ round: 2, maxRounds: 8, lastStatus: "continue" });
   assert.match(prompt, /round 2 of at most 8/);
-  assert.match(prompt, /Previous round tail/);
-  assert.match(prompt, /next: run tests/);
+  assert.match(prompt, /Continue where the previous round left off/);
 
   const blocked = buildGoalRoundPrompt({ round: 3, maxRounds: 8, lastStatus: "blocked" });
   assert.match(blocked, /reported being blocked/);
@@ -130,10 +128,6 @@ test("goalLoopConfig rejects invalid overrides without silently changing budgets
   assert.equal(goalLoopConfig({ maxRounds: 4 }).maxRounds, 4);
   assert.equal(goalLoopConfig({ roundTimeoutMs: 1000 }).roundTimeoutMs, 1000);
   assert.equal(goalLoopConfig({ roundTimeoutMs: 3600000 }).roundTimeoutMs, 3600000);
-});
-
-test("codexCliSupportsResume detects the resume subcommand without running an agent", async () => {
-  assert.equal(await codexCliSupportsResume("/nonexistent/open-cursor-test-codex"), false);
 });
 
 test("readGoalStatus returns null safely without a thread or sqlite3", async () => {

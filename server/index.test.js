@@ -120,6 +120,31 @@ test("HTTP execution failures release reservations and finish request metrics", 
   }
 });
 
+test("JSON and SSE final responses carry the same goal outcome metadata", async (t) => {
+  const cwd = await chatWorkspace(t);
+  for (const status of ["complete", "blocked", "budget_exhausted"]) {
+    const goal = { status, thread_id: "test-thread", rounds_used: 2, max_rounds: 8 };
+    for (const stream of [false, true]) {
+      const request = chatRequest(cwd, stream, { ...chatStubs,
+        execute: async (_, options) => {
+          options.onEvent?.({ text: `Goal outcome: ${status}`, agent: "goal", phase: "goal" });
+          return { content: `Goal outcome: ${status}`, agent: "goal", code: 0, goal };
+        },
+      });
+      await request.result;
+      assert.equal(request.res.statusCode, 200);
+      if (stream) {
+        const chunks = request.res.body.split("\n")
+          .filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)));
+        assert.deepEqual(chunks.at(-1).open_cursor.goal, goal);
+        assert.equal(chunks.at(-1).choices[0].finish_reason, "stop");
+        assert.ok(chunks.some((chunk) => chunk.choices[0].delta.content?.includes(status)));
+        assert.ok(request.res.body.endsWith("data: [DONE]\n\n"));
+      } else assert.deepEqual(JSON.parse(request.res.body).open_cursor.goal, goal);
+    }
+  }
+});
+
 test("disconnect during initial receipt cancels execution without leaking the reservation", async (t) => {
   const cwd = await chatWorkspace(t);
   const entered = deferred();
@@ -434,4 +459,43 @@ test("runProcess enforces per-agent execution timeout", async () => {
     (error) => error instanceof ExecutionTimeoutError && error.statusCode === 504
   );
   assert.equal(activeExecutionCount(), 0);
+});
+
+test("handleChat resolves Japanese and URI-encoded workspace paths", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "open-cursor-日本語-%20-%2F-"));
+  t.after(async () => { await rm(base, { recursive: true, force: true }); });
+
+  // 1. Via encoded X-Workspace-Path header
+  const req1 = new EventEmitter();
+  req1.headers = { "x-workspace-path": encodeURI(base) };
+  const res1 = new EventEmitter();
+  res1.writeHead = (status) => { res1.statusCode = status; };
+  res1.write = () => true;
+  res1.end = () => {};
+  let seenCwd1 = null;
+  const result1 = handleChat(req1, res1, {
+    ...chatStubs,
+    execute: async (_prompt, { cwd }) => { seenCwd1 = cwd; return { agent: "codex", content: "ok", code: 0 }; },
+  });
+  req1.emit("data", Buffer.from(JSON.stringify({ model: "codex", stream: false, messages: [{ role: "user", content: "hi" }] })));
+  req1.emit("end");
+  await result1;
+  assert.equal(seenCwd1, base);
+
+  // 2. Via body.workspace (unencoded)
+  const req2 = new EventEmitter();
+  req2.headers = {};
+  const res2 = new EventEmitter();
+  res2.writeHead = (status) => { res2.statusCode = status; };
+  res2.write = () => true;
+  res2.end = () => {};
+  let seenCwd2 = null;
+  const result2 = handleChat(req2, res2, {
+    ...chatStubs,
+    execute: async (_prompt, { cwd }) => { seenCwd2 = cwd; return { agent: "codex", content: "ok", code: 0 }; },
+  });
+  req2.emit("data", Buffer.from(JSON.stringify({ model: "codex", stream: false, workspace: base, messages: [{ role: "user", content: "hi" }] })));
+  req2.emit("end");
+  await result2;
+  assert.equal(seenCwd2, base);
 });

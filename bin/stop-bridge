@@ -1,19 +1,10 @@
 #!/bin/bash
-# Stop Open-Cursor Bridge & Mobile Dashboard
-RUNTIME_DIR="${OPEN_CURSOR_RUNTIME_DIR:-$HOME/.cursor-codex-bridge}"
-if [ ! -w "$(dirname "$RUNTIME_DIR")" ] && [ ! -d "$RUNTIME_DIR" ]; then
-  RUNTIME_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/open-cursor"
+# Only stop services whose process identity matches this installation.
+set -euo pipefail
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/runtime-env.sh"
+if [ -z "$NODE_BIN" ]; then
+  echo "Node.js is required to verify service ownership before stopping." >&2
+  exit 1
 fi
-PID_FILE="$RUNTIME_DIR/bridge.pid"
-if [ -f "$PID_FILE" ]; then
-  kill "$(cat "$PID_FILE")" 2>/dev/null && echo "Bridge stopped" || echo "Bridge not running"
-  rm -f "$PID_FILE"
-else
-  echo "No Bridge PID file found"
-fi
-
-MOBILE_PID_FILE="$RUNTIME_DIR/mobile.pid"
-if [ -f "$MOBILE_PID_FILE" ]; then
-  kill "$(cat "$MOBILE_PID_FILE")" 2>/dev/null && echo "Mobile dashboard stopped" || echo "Mobile dashboard not running"
-  rm -f "$MOBILE_PID_FILE"
-fi
+"$NODE_BIN" "$BRIDGE_DIR/scripts/service-control.mjs" stop "$RUNTIME_DIR/bridge.pid" "$BRIDGE_DIR/server/index.js"
+"$NODE_BIN" "$BRIDGE_DIR/scripts/service-control.mjs" stop "$RUNTIME_DIR/mobile.pid" "$BRIDGE_DIR/mobile/server.js"

@@ -11,12 +11,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:openCursor.chat",
-    "onCommand:openCursor.startBridge",
-    "onCommand:openCursor.stopBridge",
-    "onCommand:openCursor.showStatus",
-    "onCommand:openCursor.selectAgent"
+    "onStartupFinished"
   ],
   "main": "./src/extension.js",
   "contributes": {
@@ -68,6 +63,11 @@
           "type": "boolean",
           "default": true,
           "description": "Start the local bridge automatically when Cursor finishes starting"
+        },
+        "openCursor.autoOpenChat": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically open the Open-Cursor chat panel when Cursor starts"
         },
         "openCursor.nodePath": {
           "type": "string",

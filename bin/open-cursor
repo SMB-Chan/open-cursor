@@ -2,21 +2,17 @@
 # Open-Cursor Terminal Launcher & Mobile Dashboard
 # 課金なしのマルチエージェントコーディングIDE
 
-BRIDGE_DIR="$HOME/.cursor-codex-bridge"
-BRIDGE_PORT="${BRIDGE_PORT:-9876}"
-BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
-
-# Runtime directory: writable checkout (symlink install) or XDG state dir
-# (packaged install under /opt, which is root-owned and read-only).
-if [ -n "${OPEN_CURSOR_RUNTIME_DIR:-}" ]; then
-  RUNTIME_DIR="$OPEN_CURSOR_RUNTIME_DIR"
-elif [ -w "$BRIDGE_DIR" ] && [ -f "$BRIDGE_DIR/server/index.js" ]; then
-  RUNTIME_DIR="$BRIDGE_DIR"
-else
-  RUNTIME_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/open-cursor"
-  mkdir -p "$RUNTIME_DIR/run"
+set -euo pipefail
+source "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/runtime-env.sh"
+mkdir -p "$RUNTIME_DIR/run"
+if [ -z "$NODE_BIN" ]; then
+  echo "Error: Node.js is not found in PATH or NVM." >&2
+  exit 1
 fi
-export OPEN_CURSOR_RUNTIME_DIR="$RUNTIME_DIR"
+# Validate configuration before starting either service and honor its port.
+BRIDGE_PORT="$("$NODE_BIN" -e "import(require('node:url').pathToFileURL(process.argv[1]).href).then(({runtimeConfig}) => process.stdout.write(String(runtimeConfig.bridge.port)))" "$BRIDGE_DIR/server/config.js")"
+export BRIDGE_PORT
+BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
 
 LOG_FILE="$RUNTIME_DIR/bridge.log"
 PID_FILE="$RUNTIME_DIR/bridge.pid"
@@ -37,27 +33,6 @@ MOBILE_PUBLIC_URL="${MOBILE_PUBLIC_URL:-}"
 LAUNCH_WORKSPACE="${OPEN_CURSOR_WORKSPACE:-$PWD}"
 export OPEN_CURSOR_WORKSPACE="$LAUNCH_WORKSPACE"
 export WORKSPACE_DIR="${WORKSPACE_DIR:-$LAUNCH_WORKSPACE}"
-
-# ── Ensure PATH includes ~/.local/bin and Node.js ──
-
-export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
-
-if ! command -v node &>/dev/null; then
-  for n in "$HOME"/.nvm/versions/node/*/bin/node; do
-    if [ -x "$n" ]; then
-      export PATH="$(dirname "$n"):$PATH"
-    fi
-  done
-fi
-
-if ! command -v node &>/dev/null && [ -s "$HOME/.nvm/nvm.sh" ]; then
-  export NVM_DIR="$HOME/.nvm"
-  # shellcheck source=/dev/null
-  . "$HOME/.nvm/nvm.sh" --no-use 2>/dev/null || true
-  nvm use default &>/dev/null || nvm use stable &>/dev/null || true
-fi
-
-NODE_BIN="$(command -v node 2>/dev/null || true)"
 
 is_true() {
   case "${1,,}" in
@@ -149,7 +124,8 @@ echo "       |_| ⚡ Multi-Agent Coding Bridge · v2.9.2        "
 echo -e "${NC}"
 
 is_bridge_running() {
-  curl -sf --connect-timeout 1 "$BRIDGE_URL/health" >/dev/null 2>&1
+  curl -sf --max-time 3 --connect-timeout 1 "$BRIDGE_URL/health" 2>/dev/null |
+    "$NODE_BIN" -e 'let data=""; process.stdin.on("data", x => data += x); process.stdin.on("end", () => { try { process.exit(JSON.parse(data).bridge === "open-cursor-multi-agent" ? 0 : 1); } catch { process.exit(1); } });'
 }
 
 is_mobile_running() {
@@ -160,9 +136,9 @@ is_mobile_running() {
     ::1) health_host="[::1]" ;;
   esac
   if [ "${MOBILE_SCHEME:-http}" = "https" ]; then
-    curl -ksf --connect-timeout 1 "https://$health_host:$MOBILE_PORT/healthz" >/dev/null 2>&1
+    curl -ksf --max-time 3 --connect-timeout 1 "https://$health_host:$MOBILE_PORT/healthz" >/dev/null 2>&1
   else
-    curl -sf --connect-timeout 1 "http://$health_host:$MOBILE_PORT/healthz" >/dev/null 2>&1
+    curl -sf --max-time 3 --connect-timeout 1 "http://$health_host:$MOBILE_PORT/healthz" >/dev/null 2>&1
   fi
 }
 
@@ -175,7 +151,7 @@ if ! is_bridge_running; then
   echo -e "${YELLOW}Starting bridge server...${NC}"
   cd "$BRIDGE_DIR/server"
   setsid "$NODE_BIN" index.js > "$LOG_FILE" 2>&1 &
-  echo $! > "$PID_FILE"
+  "$NODE_BIN" "$BRIDGE_DIR/scripts/service-control.mjs" record "$PID_FILE" "$!" "$BRIDGE_DIR/server/index.js"
 
   for i in $(seq 1 20); do
     if is_bridge_running; then break; fi
@@ -197,7 +173,7 @@ if ! is_mobile_running && [ -d "$BRIDGE_DIR/mobile" ]; then
   echo -e "${YELLOW}Starting Mobile Web Dashboard...${NC}"
   cd "$BRIDGE_DIR/mobile"
   setsid "$NODE_BIN" server.js > "$MOBILE_LOG" 2>&1 &
-  echo $! > "$MOBILE_PID_FILE"
+  "$NODE_BIN" "$BRIDGE_DIR/scripts/service-control.mjs" record "$MOBILE_PID_FILE" "$!" "$BRIDGE_DIR/mobile/server.js"
 
   for i in $(seq 1 10); do
     if is_mobile_running; then break; fi
@@ -206,11 +182,14 @@ if ! is_mobile_running && [ -d "$BRIDGE_DIR/mobile" ]; then
 
   if is_mobile_running; then
     echo -e "${GREEN}Mobile Web Dashboard started.${NC}"
+  else
+    echo "Mobile Web Dashboard failed. Check: $MOBILE_LOG" >&2
+    exit 1
   fi
 fi
 
 # Show status
-HEALTH=$(curl -sf "$BRIDGE_URL/health" 2>/dev/null)
+HEALTH=$(curl -sf --max-time 3 "$BRIDGE_URL/health" 2>/dev/null)
 echo -e "${CYAN}$HEALTH${NC}" | python3 -m json.tool 2>/dev/null || echo "$HEALTH"
 
 LOCAL_IP=$(ip route get 1 2>/dev/null | awk '{print $7;exit}' || echo "127.0.0.1")

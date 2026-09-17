@@ -4,17 +4,14 @@
  * evidence to prevent context window exhaustion and Linux argv/E2BIG limits.
  */
 
-const MAX_HISTORY_BYTES = 32 * 1024;       // 32 KB total for past conversation turns
-const MAX_TURN_ASSISTANT_BYTES = 2 * 1024;  // 2 KB max per previous assistant turn
-const MAX_TURN_USER_BYTES = 1 * 1024;       // 1 KB max per previous user turn
-const MAX_PLAN_HANDOFF_BYTES = 24 * 1024;   // 24 KB max for Plan -> Implementation
-const MAX_IMPL_HANDOFF_BYTES = 16 * 1024;   // 16 KB max for Implementation -> Review
-const MAX_REVIEW_HANDOFF_BYTES = 20 * 1024; // 20 KB max for Review -> Refinement
-const MAX_CLI_ARG_BYTES = 64 * 1024;        // 64 KB max for any single CLI argument (Linux safe)
+const MAX_HISTORY_BYTES = 32 * 1024;
+const MAX_TURN_ASSISTANT_BYTES = 2 * 1024;
+const MAX_TURN_USER_BYTES = 1 * 1024;
+const MAX_PLAN_HANDOFF_BYTES = 24 * 1024;
+const MAX_IMPL_HANDOFF_BYTES = 16 * 1024;
+const MAX_REVIEW_HANDOFF_BYTES = 20 * 1024;
+const MAX_CLI_ARG_BYTES = 64 * 1024;
 
-/**
- * Clips text at a safe UTF-8 byte boundary, appending an indicator if truncated.
- */
 function clipByBytes(text, maxBytes, indicator = "\n... [truncated for context budget]") {
   const value = String(text || "");
   const buf = Buffer.from(value, "utf8");
@@ -181,9 +178,6 @@ function clipCodeBody(bodyText, maxLines) {
   ].join("\n");
 }
 
-/**
- * Extracts a concise summary from collaborative outputs (Plan/Impl/Review/Refine).
- */
 function summarizeCollaborativeResponse(content, maxBytes = MAX_TURN_ASSISTANT_BYTES) {
   if (typeof content !== "string" || !content) return "";
 
@@ -225,10 +219,6 @@ function summarizeCollaborativeResponse(content, maxBytes = MAX_TURN_ASSISTANT_B
   return clipByBytes(result || content, maxBytes);
 }
 
-/**
- * Compresses an array of chat messages.
- * Always leaves the LAST message (current user prompt) completely untouched.
- */
 function compressMessages(messages, options = {}) {
   if (!Array.isArray(messages) || messages.length <= 1) {
     return { messages: messages || [], compressed: false, originalBytes: 0, compressedBytes: 0, savedBytes: 0 };
@@ -268,18 +258,21 @@ function compressMessages(messages, options = {}) {
     }
   }
 
-  // Check total byte size and drop oldest turns if still over budget
+  // Check total byte size and drop oldest turns if still over budget.
+  // Track a cumulative byte total instead of re-serializing the whole
+  // history on every iteration (quadratic in history length).
+  const SEPARATOR_BYTES = 1;
+  let totalBytes = compressedPrior.reduce(
+    (sum, m) => sum + Buffer.byteLength(m.content, "utf8") + SEPARATOR_BYTES,
+    0
+  );
   let resultHistory = compressedPrior;
-  while (resultHistory.length > 2) {
-    const totalBytes = Buffer.byteLength(
-      resultHistory.map(m => m.content).join("\n"),
-      "utf8"
-    );
-    if (totalBytes <= maxTotal) break;
-    // Drop the oldest pair (user + assistant)
-    resultHistory.shift();
+  while (resultHistory.length > 2 && totalBytes > maxTotal) {
+    const dropped = resultHistory.shift();
+    totalBytes -= Buffer.byteLength(dropped.content, "utf8") + SEPARATOR_BYTES;
     if (resultHistory.length > 0 && resultHistory[0].role === "assistant") {
-      resultHistory.shift();
+      const droppedAssistant = resultHistory.shift();
+      totalBytes -= Buffer.byteLength(droppedAssistant.content, "utf8") + SEPARATOR_BYTES;
     }
   }
 
@@ -588,20 +581,11 @@ function compressGitDiff(diffText, maxBytes = 32 * 1024, maxLinesPerFile = 100) 
   return result;
 }
 
-/**
- * Ensures a prompt passed via argv to child processes never triggers Linux E2BIG.
- */
 function safePromptArg(prompt, maxBytes = MAX_CLI_ARG_BYTES) {
   return clipByBytes(prompt, maxBytes, "\n... [instruction prompt compacted for execution]");
 }
 
 export {
-  MAX_HISTORY_BYTES,
-  MAX_TURN_ASSISTANT_BYTES,
-  MAX_TURN_USER_BYTES,
-  MAX_PLAN_HANDOFF_BYTES,
-  MAX_IMPL_HANDOFF_BYTES,
-  MAX_REVIEW_HANDOFF_BYTES,
   MAX_CLI_ARG_BYTES,
   clipByBytes,
   clipUtf8Safe,
@@ -612,5 +596,4 @@ export {
   compressGitDiff,
   safePromptArg,
   summarizeCollaborativeResponse,
-  handoffManifest,
 };
