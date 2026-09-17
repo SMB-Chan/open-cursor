@@ -441,6 +441,7 @@
           <span>Files</span>
           <button class="action-btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadFiles()">Refresh</button>
         </div>
+        <input type="text" id="file-filter" placeholder="Filter by name…" aria-label="Filter files" style="width: 100%; background: #0d1117; border: 1px solid var(--card-border); color: #fff; padding: 8px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: 12px; margin-bottom: 8px;">
         <div id="file-summary" style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;"></div>
         <div class="file-tree" id="file-tree"><div class="tree-empty">Loading…</div></div>
       </div>
@@ -700,66 +701,90 @@
     }
 
     // File Tree Loader
-    async function loadFiles() {
+    let fileTreeEntries = [];
+    let fileTreeTruncated = false;
+
+    function renderFileTree(filter) {
       const container = document.getElementById('file-tree');
       const summary = document.getElementById('file-summary');
+      const query = (filter || '').toLowerCase().trim();
+      const entries = query
+        ? fileTreeEntries.filter(e => e.name.toLowerCase().includes(query) || e.path.toLowerCase().includes(query))
+        : fileTreeEntries;
+
+      const fileCount = entries.filter(e => e.type === 'file').length;
+      const dirCount = entries.filter(e => e.type === 'dir').length;
+      summary.textContent = query
+        ? `${fileCount} files, ${dirCount} directories matching "${filter}"`
+        : `${fileCount} files, ${dirCount} directories`;
+
+      container.innerHTML = '';
+      if (entries.length === 0) {
+        container.innerHTML = '<div class="tree-empty">No matching files</div>';
+        return;
+      }
+
+      const stack = [{ el: container, depth: -1 }];
+      for (const entry of entries) {
+        const depth = entry.path.split('/').length - 1;
+        while (stack.length > 1 && stack[stack.length - 1].depth >= depth) stack.pop();
+        const parent = stack[stack.length - 1].el;
+        if (entry.type === 'dir') {
+          const dir = document.createElement('div');
+          dir.className = 'tree-dir';
+          dir.innerHTML = `<span class="tree-icon">▸</span><span class="tree-name">${escapeHtml(entry.name)}</span>`;
+          const children = document.createElement('div');
+          children.className = 'tree-children';
+          children.style.display = query ? 'block' : 'none';
+          if (query) dir.querySelector('.tree-icon').textContent = '▾';
+          dir.addEventListener('click', () => {
+            const open = children.style.display !== 'none';
+            children.style.display = open ? 'none' : 'block';
+            dir.querySelector('.tree-icon').textContent = open ? '▸' : '▾';
+          });
+          parent.appendChild(dir);
+          parent.appendChild(children);
+          stack.push({ el: children, depth });
+        } else {
+          const file = document.createElement('div');
+          file.className = 'tree-file';
+          const sizeStr = entry.size > 1024 ? Math.round(entry.size / 1024) + ' KB' : entry.size + ' B';
+          file.innerHTML = `<span class="tree-icon"> </span><span class="tree-name">${escapeHtml(entry.name)}</span><span class="tree-size">${sizeStr}</span>`;
+          file.addEventListener('click', () => {
+            const prompt = document.getElementById('prompt-input');
+            prompt.value += (prompt.value ? ' ' : '') + entry.path;
+            switchTab('chat');
+            prompt.focus();
+          });
+          parent.appendChild(file);
+        }
+      }
+      if (fileTreeTruncated && !query) {
+        const note = document.createElement('div');
+        note.className = 'tree-empty';
+        note.textContent = 'Truncated — some files not shown';
+        container.appendChild(note);
+      }
+    }
+
+    async function loadFiles() {
+      const container = document.getElementById('file-tree');
       container.innerHTML = '<div class="tree-empty">Loading…</div>';
-      summary.textContent = '';
+      document.getElementById('file-summary').textContent = '';
       try {
         const res = await fetch('/api/files?depth=3');
         const data = await res.json();
-        if (!data.entries || data.entries.length === 0) {
-          container.innerHTML = '<div class="tree-empty">No files</div>';
-          return;
-        }
-        const fileCount = data.entries.filter(e => e.type === 'file').length;
-        const dirCount = data.entries.filter(e => e.type === 'dir').length;
-        summary.textContent = `${fileCount} files, ${dirCount} directories`;
-        container.innerHTML = '';
-        const stack = [{ el: container, depth: -1 }];
-        for (const entry of data.entries) {
-          const depth = entry.path.split('/').length - 1;
-          while (stack.length > 1 && stack[stack.length - 1].depth >= depth) stack.pop();
-          const parent = stack[stack.length - 1].el;
-          if (entry.type === 'dir') {
-            const dir = document.createElement('div');
-            dir.className = 'tree-dir';
-            dir.innerHTML = `<span class="tree-icon">▸</span><span class="tree-name">${escapeHtml(entry.name)}</span>`;
-            const children = document.createElement('div');
-            children.className = 'tree-children';
-            children.style.display = 'none';
-            dir.addEventListener('click', () => {
-              const open = children.style.display !== 'none';
-              children.style.display = open ? 'none' : 'block';
-              dir.querySelector('.tree-icon').textContent = open ? '▸' : '▾';
-            });
-            parent.appendChild(dir);
-            parent.appendChild(children);
-            stack.push({ el: children, depth });
-          } else {
-            const file = document.createElement('div');
-            file.className = 'tree-file';
-            const sizeStr = entry.size > 1024 ? Math.round(entry.size / 1024) + ' KB' : entry.size + ' B';
-            file.innerHTML = `<span class="tree-icon"> </span><span class="tree-name">${escapeHtml(entry.name)}</span><span class="tree-size">${sizeStr}</span>`;
-            file.addEventListener('click', () => {
-              const prompt = document.getElementById('prompt-input');
-              prompt.value += (prompt.value ? ' ' : '') + entry.path;
-              switchTab('chat');
-              prompt.focus();
-            });
-            parent.appendChild(file);
-          }
-        }
-        if (data.truncated) {
-          const note = document.createElement('div');
-          note.className = 'tree-empty';
-          note.textContent = 'Truncated — some files not shown';
-          container.appendChild(note);
-        }
+        fileTreeEntries = data.entries || [];
+        fileTreeTruncated = data.truncated || false;
+        renderFileTree(document.getElementById('file-filter').value);
       } catch (err) {
         container.innerHTML = `<div class="tree-empty">Failed to load: ${escapeHtml(err.message)}</div>`;
       }
     }
+
+    document.getElementById('file-filter').addEventListener('input', (e) => {
+      renderFileTree(e.target.value);
+    });
 
     // Status Loader
     async function loadStatus() {
